@@ -1,65 +1,152 @@
-import Image from "next/image";
+'use client';
 
-export default function Home() {
+import { MetricsRow } from '@/components/dashboard/metrics-row';
+import { PositionsCard } from '@/components/dashboard/positions-card';
+import { AlertsCard } from '@/components/dashboard/alerts-card';
+import { HoldingsCard } from '@/components/dashboard/holdings-card';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Send, Sparkles } from 'lucide-react';
+import { useState } from 'react';
+import { usePortfolioStore } from '@/stores/portfolio-store';
+
+const quickQuestions = [
+  'What positions need attention?',
+  'Find covered call opportunities',
+  'Analyze my portfolio risk',
+  'Best trades for this week',
+];
+
+export default function DashboardPage() {
+  const [aiMessage, setAiMessage] = useState('');
+
+  const {
+    positions,
+    stockHoldings,
+    summary,
+    alerts,
+  } = usePortfolioStore();
+
+  // Transform positions to the format expected by PositionsCard
+  const formattedPositions = positions.map((p) => ({
+    id: p.id,
+    underlying: p.underlying,
+    optionType: p.option_type,
+    strike: p.strike,
+    expiration: p.expiry,
+    quantity: p.quantity,
+    premiumCollected: p.premium_collected,
+    openDate: p.open_date,
+    status: p.status === 'OPEN' ? 'open' as const : 'closed' as const,
+    daysToExpiry: p.days_to_expiry || 0,
+  }));
+
+  // Transform holdings to the format expected by HoldingsCard
+  const formattedHoldings = stockHoldings.map((h) => ({
+    id: h.id,
+    symbol: h.symbol,
+    quantity: h.quantity,
+    avgCost: h.avg_cost || 0,
+  }));
+
+  // Transform alerts to the format expected by AlertsCard
+  const formattedAlerts = alerts.map((a) => ({
+    id: a.id,
+    type: a.type,
+    title: a.title,
+    message: a.message,
+  }));
+
   return (
-    <div className="flex min-h-screen items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex min-h-screen w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
+    <div className="space-y-6">
+      {/* Page Header */}
+      <div>
+        <h1 className="text-3xl font-bold tracking-tight">Dashboard</h1>
+        <p className="text-muted-foreground">
+          Portfolio overview and AI-powered insights
+        </p>
+      </div>
+
+      {/* Metrics Row */}
+      <MetricsRow
+        totalValue={summary.totalValue}
+        realizedPnl={summary.realizedPnl}
+        openPositions={summary.openPositions}
+        openPremium={summary.openPremium}
+        winRate={summary.winRate}
+        totalTrades={summary.totalTrades}
+      />
+
+      {/* Main Content Grid */}
+      <div className="grid gap-6 lg:grid-cols-3">
+        {/* AI Advisor - Takes 2 columns */}
+        <div className="lg:col-span-2">
+          <Card className="h-full">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Sparkles className="h-5 w-5 text-primary" />
+                AI Market Advisor
+              </CardTitle>
+              <p className="text-sm text-muted-foreground">
+                Your intelligent options trading assistant
+              </p>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {/* Welcome message */}
+              <div className="rounded-lg bg-primary/10 p-4">
+                <p className="font-medium">Welcome! I'm your AI options advisor.</p>
+                <p className="text-sm text-muted-foreground mt-1">
+                  You have {summary.openPositions} open position{summary.openPositions !== 1 ? 's' : ''} and {stockHoldings.length} stock holding{stockHoldings.length !== 1 ? 's' : ''}.
+                  {summary.ccLotsAvailable > 0 && ` ${summary.ccLotsAvailable} covered call lot${summary.ccLotsAvailable !== 1 ? 's' : ''} available.`}
+                  {' '}Ask me about trade ideas, position management, or market analysis.
+                </p>
+              </div>
+
+              {/* Quick questions */}
+              <div className="space-y-2">
+                <p className="text-sm text-muted-foreground">Quick questions:</p>
+                <div className="flex flex-wrap gap-2">
+                  {quickQuestions.map((question, i) => (
+                    <Button
+                      key={i}
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setAiMessage(question)}
+                    >
+                      {question}
+                    </Button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Input */}
+              <div className="flex gap-2">
+                <Input
+                  placeholder="Ask about trade ideas, position management, or market analysis..."
+                  value={aiMessage}
+                  onChange={(e) => setAiMessage(e.target.value)}
+                  className="flex-1"
+                />
+                <Button>
+                  <Send className="h-4 w-4" />
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+
+        {/* Right Sidebar */}
+        <div className="space-y-6">
+          <AlertsCard alerts={formattedAlerts} />
+          <PositionsCard positions={formattedPositions} />
+          <HoldingsCard
+            holdings={formattedHoldings}
+            totalValue={summary.totalStockValue}
+            ccLotsAvailable={summary.ccLotsAvailable}
+          />
         </div>
-      </main>
+      </div>
     </div>
   );
 }
