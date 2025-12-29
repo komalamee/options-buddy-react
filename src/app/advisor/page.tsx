@@ -12,7 +12,6 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
   Send,
   Sparkles,
@@ -22,8 +21,12 @@ import {
   Wallet,
   TrendingUp,
   AlertTriangle,
+  Settings,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { api } from '@/lib/api';
+import { usePortfolioStore } from '@/stores/portfolio-store';
+import Link from 'next/link';
 
 interface Message {
   role: 'user' | 'assistant';
@@ -31,52 +34,56 @@ interface Message {
   timestamp: Date;
 }
 
-const initialMessages: Message[] = [
-  {
-    role: 'assistant',
-    content: `Welcome! I'm your AI options advisor. I can see you have:
-
-• **1 open position** (TSLA $500 CALL)
-• **4 stock holdings** (TSLA, NVDA, COIN, MSTR)
-• **1 covered call lot** available
-
-How can I help you today? You can ask me about:
-- Position management and roll strategies
-- Finding new trade opportunities
-- Portfolio risk analysis
-- Market conditions and outlook`,
-    timestamp: new Date(),
-  },
-];
-
-// Portfolio context for the sidebar
-const portfolioContext = {
-  positions: [
-    { symbol: 'TSLA', type: 'CALL', strike: 500, dte: 81, premium: 4638 },
-  ],
-  holdings: [
-    { symbol: 'TSLA', shares: 158, lots: 1 },
-    { symbol: 'NVDA', shares: 44, lots: 0 },
-    { symbol: 'COIN', shares: 30, lots: 0 },
-    { symbol: 'MSTR', shares: 21, lots: 0 },
-  ],
-  alerts: [] as any[],
-};
-
 const quickPrompts = [
   'What positions need attention?',
   'Find covered call opportunities',
   'Analyze my portfolio risk',
   'What should I trade this week?',
-  'Roll strategy for TSLA position',
+  'Roll strategy for my positions',
   'Best CSP opportunities right now',
 ];
 
 export default function AdvisorPage() {
-  const [messages, setMessages] = useState<Message[]>(initialMessages);
+  const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [aiConfigured, setAiConfigured] = useState<boolean | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  const { positions, stockHoldings, summary } = usePortfolioStore();
+
+  // Check if AI is configured on mount
+  useEffect(() => {
+    const checkAISettings = async () => {
+      try {
+        const settings = await api.getAISettings();
+        setAiConfigured(settings.api_key_set);
+
+        // Add welcome message if configured
+        if (settings.api_key_set) {
+          const welcomeMsg: Message = {
+            role: 'assistant',
+            content: `Welcome! I'm your AI options advisor powered by ${settings.provider === 'google' ? 'Gemini' : settings.provider === 'anthropic' ? 'Claude' : 'GPT-4'}.
+
+I can see your portfolio and help with:
+- **Position management** and roll strategies
+- **Trade ideas** based on your holdings
+- **Risk analysis** and portfolio review
+- **Market context** and IV environment
+
+What would you like to explore?`,
+            timestamp: new Date(),
+          };
+          setMessages([welcomeMsg]);
+        }
+      } catch (err) {
+        console.error('Failed to check AI settings:', err);
+        setAiConfigured(false);
+      }
+    };
+    checkAISettings();
+  }, []);
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -96,23 +103,90 @@ export default function AdvisorPage() {
     setMessages((prev) => [...prev, userMessage]);
     setInput('');
     setIsLoading(true);
+    setError(null);
 
-    // Simulate AI response
-    await new Promise((resolve) => setTimeout(resolve, 1500));
+    try {
+      // Build messages array for API (excluding timestamps)
+      const apiMessages = [...messages, userMessage].map((m) => ({
+        role: m.role,
+        content: m.content,
+      }));
 
-    const aiResponse: Message = {
-      role: 'assistant',
-      content: generateResponse(input),
-      timestamp: new Date(),
-    };
+      const result = await api.sendChatMessage(apiMessages);
 
-    setMessages((prev) => [...prev, aiResponse]);
-    setIsLoading(false);
+      const aiResponse: Message = {
+        role: 'assistant',
+        content: result.response,
+        timestamp: new Date(),
+      };
+
+      setMessages((prev) => [...prev, aiResponse]);
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : 'Failed to get response';
+      setError(errorMessage);
+
+      // Add error as a system message
+      const errorResponse: Message = {
+        role: 'assistant',
+        content: `Sorry, I encountered an error: ${errorMessage}`,
+        timestamp: new Date(),
+      };
+      setMessages((prev) => [...prev, errorResponse]);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const handleQuickPrompt = (prompt: string) => {
     setInput(prompt);
   };
+
+  // Show setup prompt if AI not configured
+  if (aiConfigured === false) {
+    return (
+      <div className="space-y-6">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight">AI Advisor</h1>
+          <p className="text-muted-foreground">
+            Your intelligent options trading assistant
+          </p>
+        </div>
+
+        <Card className="max-w-xl mx-auto">
+          <CardHeader className="text-center">
+            <div className="mx-auto h-12 w-12 rounded-full bg-primary/10 flex items-center justify-center mb-4">
+              <Sparkles className="h-6 w-6 text-primary" />
+            </div>
+            <CardTitle>Set Up AI Advisor</CardTitle>
+            <CardDescription>
+              Configure your AI provider to get personalized options trading advice
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <p className="text-sm text-muted-foreground text-center">
+              The AI Advisor uses your portfolio data to provide contextual recommendations
+              for position management, trade ideas, and risk analysis.
+            </p>
+            <Link href="/settings">
+              <Button className="w-full" size="lg">
+                <Settings className="h-4 w-4 mr-2" />
+                Configure AI Settings
+              </Button>
+            </Link>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  // Loading state while checking
+  if (aiConfigured === null) {
+    return (
+      <div className="flex items-center justify-center h-[60vh]">
+        <RefreshCw className="h-8 w-8 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -135,7 +209,7 @@ export default function AdvisorPage() {
                 </div>
                 <div>
                   <CardTitle className="text-lg">Market Advisor</CardTitle>
-                  <CardDescription>Powered by Claude</CardDescription>
+                  <CardDescription>AI-powered trading assistant</CardDescription>
                 </div>
               </div>
             </CardHeader>
@@ -176,7 +250,10 @@ export default function AdvisorPage() {
                       <div
                         className="prose prose-sm dark:prose-invert max-w-none"
                         dangerouslySetInnerHTML={{
-                          __html: message.content.replace(/\n/g, '<br>').replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>'),
+                          __html: message.content
+                            .replace(/\n/g, '<br>')
+                            .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+                            .replace(/\*(.*?)\*/g, '<em>$1</em>'),
                         }}
                       />
                     </div>
@@ -206,6 +283,7 @@ export default function AdvisorPage() {
                     size="sm"
                     onClick={() => handleQuickPrompt(prompt)}
                     className="text-xs"
+                    disabled={isLoading}
                   >
                     {prompt}
                   </Button>
@@ -221,7 +299,11 @@ export default function AdvisorPage() {
                   disabled={isLoading}
                 />
                 <Button onClick={handleSend} disabled={isLoading || !input.trim()}>
-                  <Send className="h-4 w-4" />
+                  {isLoading ? (
+                    <RefreshCw className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Send className="h-4 w-4" />
+                  )}
                 </Button>
               </div>
             </div>
@@ -230,7 +312,7 @@ export default function AdvisorPage() {
 
         {/* Portfolio Context Sidebar */}
         <div className="space-y-6">
-          {/* Current Position */}
+          {/* Current Positions */}
           <Card>
             <CardHeader className="pb-3">
               <CardTitle className="text-sm flex items-center gap-2">
@@ -239,17 +321,23 @@ export default function AdvisorPage() {
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-2">
-              {portfolioContext.positions.map((pos, idx) => (
-                <div key={idx} className="p-3 rounded-lg bg-muted">
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="font-semibold">{pos.symbol}</span>
-                    <Badge variant="outline">{pos.dte}d</Badge>
+              {positions.length > 0 ? (
+                positions.slice(0, 3).map((pos) => (
+                  <div key={pos.id} className="p-3 rounded-lg bg-muted">
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="font-semibold">{pos.underlying}</span>
+                      <Badge variant="outline">{pos.days_to_expiry || 0}d</Badge>
+                    </div>
+                    <p className="text-sm text-muted-foreground">
+                      ${pos.strike} {pos.option_type} • ${pos.premium_collected.toLocaleString()} premium
+                    </p>
                   </div>
-                  <p className="text-sm text-muted-foreground">
-                    ${pos.strike} {pos.type} • ${pos.premium.toLocaleString()} premium
-                  </p>
-                </div>
-              ))}
+                ))
+              ) : (
+                <p className="text-sm text-muted-foreground text-center py-2">
+                  No open positions
+                </p>
+              )}
             </CardContent>
           </Card>
 
@@ -262,139 +350,58 @@ export default function AdvisorPage() {
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-2">
-              {portfolioContext.holdings.map((holding, idx) => (
-                <div
-                  key={idx}
-                  className="flex items-center justify-between py-2 border-b border-border last:border-0"
-                >
-                  <div>
-                    <span className="font-medium">{holding.symbol}</span>
-                    <span className="text-sm text-muted-foreground ml-2">
-                      {holding.shares} shares
-                    </span>
+              {stockHoldings.length > 0 ? (
+                stockHoldings.slice(0, 4).map((holding) => (
+                  <div
+                    key={holding.id}
+                    className="flex items-center justify-between py-2 border-b border-border last:border-0"
+                  >
+                    <div>
+                      <span className="font-medium">{holding.symbol}</span>
+                      <span className="text-sm text-muted-foreground ml-2">
+                        {holding.quantity} shares
+                      </span>
+                    </div>
+                    {holding.quantity >= 100 && (
+                      <Badge className="bg-green-500 hover:bg-green-600">
+                        {Math.floor(holding.quantity / 100)} lot{Math.floor(holding.quantity / 100) > 1 ? 's' : ''}
+                      </Badge>
+                    )}
                   </div>
-                  {holding.lots > 0 && (
-                    <Badge className="bg-green-500 hover:bg-green-600">
-                      {holding.lots} lot
-                    </Badge>
-                  )}
-                </div>
-              ))}
+                ))
+              ) : (
+                <p className="text-sm text-muted-foreground text-center py-2">
+                  No stock holdings
+                </p>
+              )}
             </CardContent>
           </Card>
 
-          {/* Alerts */}
+          {/* Quick Stats */}
           <Card>
             <CardHeader className="pb-3">
               <CardTitle className="text-sm flex items-center gap-2">
                 <AlertTriangle className="h-4 w-4" />
-                Alerts
+                Portfolio Stats
               </CardTitle>
             </CardHeader>
-            <CardContent>
-              {portfolioContext.alerts.length === 0 ? (
-                <div className="text-center py-4">
-                  <p className="text-sm text-green-500 font-medium">All clear!</p>
-                  <p className="text-xs text-muted-foreground">No urgent alerts</p>
-                </div>
-              ) : (
-                <div className="space-y-2">
-                  {portfolioContext.alerts.map((alert, idx) => (
-                    <div key={idx} className="p-2 rounded bg-red-500/10 text-red-500 text-sm">
-                      {alert.message}
-                    </div>
-                  ))}
-                </div>
-              )}
+            <CardContent className="space-y-2 text-sm">
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Open Positions</span>
+                <span className="font-medium">{summary.openPositions}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Win Rate</span>
+                <span className="font-medium text-green-500">{summary.winRate.toFixed(1)}%</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">CC Lots Available</span>
+                <span className="font-medium">{summary.ccLotsAvailable}</span>
+              </div>
             </CardContent>
           </Card>
         </div>
       </div>
     </div>
   );
-}
-
-// Simple response generator - will be replaced with real AI
-function generateResponse(input: string): string {
-  const lowerInput = input.toLowerCase();
-
-  if (lowerInput.includes('attention') || lowerInput.includes('expiring')) {
-    return `Based on your current positions:
-
-**Your TSLA $500 CALL has 81 days to expiration** - no immediate action needed.
-
-With over 2 months until expiry, you have flexibility. Consider:
-- **If bullish**: Hold and let theta work
-- **If neutral**: Roll to a lower strike
-- **If bearish**: Close for the current premium
-
-Would you like me to analyze roll opportunities?`;
-  }
-
-  if (lowerInput.includes('covered call') || lowerInput.includes('cc')) {
-    return `**Covered Call Opportunities:**
-
-You have **158 TSLA shares (1 lot available)**.
-
-With TSLA at ~$421, consider these strikes for Jan 17 expiry:
-- **$450 strike**: ~$5.20 premium (7% OTM, 85% keep probability)
-- **$430 strike**: ~$8.50 premium (2% OTM, 72% keep probability)
-
-Higher strike = keep more upside but less premium.
-Lower strike = more premium but may get called away.
-
-Which risk/reward profile interests you?`;
-  }
-
-  if (lowerInput.includes('risk') || lowerInput.includes('portfolio')) {
-    return `**Portfolio Risk Analysis:**
-
-Your current exposure:
-- **TSLA**: Heavy concentration ($66,820 stock + $4,638 options)
-- **Tech sector**: 100% allocation
-- **Diversification**: Limited (4 holdings)
-
-**Risk factors:**
-⚠️ High correlation between positions (all tech/growth)
-⚠️ Single sector exposure
-✓ Long DTE on option position (81 days)
-
-**Suggestions:**
-1. Consider sector diversification (add SPY or non-tech)
-2. Use covered calls on TSLA to reduce delta exposure
-3. Keep cash reserve for CSP opportunities
-
-Want me to detail specific hedge strategies?`;
-  }
-
-  if (lowerInput.includes('trade') || lowerInput.includes('week')) {
-    return `**This Week's Top Opportunities:**
-
-Based on elevated IV and your holdings:
-
-1. **TSLA Covered Call** (You own 158 shares)
-   - Jan $450 Call @ $5.20 premium
-   - Score: 85/100
-
-2. **NVDA Cash Secured Put**
-   - Jan $125 Put @ $2.80 premium
-   - Score: 78/100 (requires $12,500 collateral)
-
-3. **AMD Bull Put Spread**
-   - Sell $130 / Buy $125 @ $1.80 credit
-   - Score: 72/100 (max risk $320)
-
-The market is showing moderate IV (VIX ~14), favoring premium selling strategies.
-
-Want details on any of these?`;
-  }
-
-  return `I can help you with:
-
-• **Position Management**: Ask about your current positions, roll strategies, or exit timing
-• **Trade Ideas**: Finding CSPs, covered calls, or spread opportunities
-• **Risk Analysis**: Portfolio exposure, Greeks, correlation analysis
-• **Market Context**: IV environment, sector trends, earnings calendar
-
-What would you like to explore?`;
 }

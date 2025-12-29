@@ -6,6 +6,8 @@ from pydantic import BaseModel
 from typing import Optional, List
 from datetime import datetime, date
 import logging
+import httpx
+import json
 
 from config import settings
 from database import (
@@ -22,7 +24,11 @@ from database import (
     create_watchlist,
     add_symbol_to_watchlist,
     remove_symbol_from_watchlist,
-    get_performance_stats
+    get_performance_stats,
+    get_setting,
+    set_setting,
+    get_all_settings,
+    init_db
 )
 from ibkr_service import get_ibkr_service
 
@@ -108,6 +114,91 @@ class ScanRequest(BaseModel):
     max_dte: int = 45
     min_delta: float = 0.15
     max_delta: float = 0.35
+
+
+class AISettingsUpdate(BaseModel):
+    provider: str  # anthropic, openai, google
+    api_key: str
+
+
+class SettingUpdate(BaseModel):
+    key: str
+    value: str
+
+
+class ChatMessage(BaseModel):
+    role: str  # user or assistant
+    content: str
+
+
+class ChatRequest(BaseModel):
+    messages: List[ChatMessage]
+
+
+# System prompt for the AI advisor - NOT user configurable
+AI_SYSTEM_PROMPT = """You are an expert options trading advisor integrated into Options Buddy, a premium-selling focused options analysis platform.
+
+## Core Philosophy
+You help users **earn income through option premiums** while working toward their long-term stock accumulation goals. The app uses Black-Scholes pricing and IV/HV analysis to find mispriced (overpriced) options that are ideal for premium sellers.
+
+## Your Capabilities
+You have real-time access to the user's:
+- **Open option positions** (CSPs, covered calls, spreads)
+- **Stock holdings** with share counts and cost basis
+- **Performance stats** (win rate, total P&L, trade history)
+- **Covered call lots available** (shares ÷ 100)
+
+## Premium Selling Strategies
+Focus on these strategies based on user's situation:
+
+1. **Cash-Secured Puts (CSPs)**: For stocks the user WANTS to own
+   - Ideal: Sell puts on stocks they'd buy anyway at a lower price
+   - Look for IV > HV (overpriced premiums)
+   - Target delta 0.15-0.30 for good probability of profit
+
+2. **Covered Calls (CCs)**: For stocks the user ALREADY owns
+   - Generate income while holding long-term positions
+   - Strike selection based on user's exit willingness
+   - "Grow position while earning premium" = sell OTM calls, buy more shares with premium
+
+3. **The Wheel Strategy**: CSP → Assignment → CC → Called Away → Repeat
+   - Perfect for users wanting to accumulate specific stocks
+   - Track cost basis reduction from premiums collected
+
+## Finding Arbitrage/Mispricing Opportunities
+The app's core value is identifying overpriced options using:
+- **IV/HV Ratio > 1.2**: Implied volatility exceeds historical (option is expensive)
+- **Model vs Market Price**: Black-Scholes theoretical price vs actual market price
+- When IV > HV, premium sellers have an edge
+
+## Goal-Aware Recommendations
+Always consider the user's long-term goals when advising:
+- If they want to GROW a position: Suggest CSPs to accumulate + CCs that are unlikely to be called
+- If they want to HOLD a position: Conservative OTM covered calls (70%+ probability of keeping shares)
+- If they're WILLING TO SELL: More aggressive ITM/ATM covered calls for max premium
+- If they're BUILDING a position: CSPs at their target buy price
+
+## Response Guidelines
+- Always reference their ACTUAL positions and holdings from the portfolio context
+- Give SPECIFIC strikes, expirations, and premium estimates
+- Explain WHY an option is attractive (IV/HV ratio, probability of profit)
+- Calculate premium as % of collateral (annualized yield)
+- Warn about assignment risk, earnings dates, ex-dividend dates
+- Suggest position sizes based on their holdings and risk tolerance
+
+## Key Metrics to Mention
+- **Premium / Collateral** = Return on capital
+- **DTE (Days to Expiry)**: 30-45 DTE is optimal for theta decay
+- **Delta**: Probability proxy (0.30 delta ≈ 70% profit probability for sellers)
+- **IV/HV Ratio**: >1.2 means option is overpriced (edge for sellers)
+
+## Format
+- Use **bold** for key numbers and terms
+- Use bullet points for lists
+- Keep responses concise but complete
+- Include specific actionable suggestions
+
+Remember: You provide strategy analysis, not financial advice. Users should verify all data and do their own due diligence before trading."""
 
 
 # ==================== HEALTH CHECK ====================
@@ -605,7 +696,269 @@ def get_portfolio_summary():
     }
 
 
+# ==================== APP SETTINGS ====================
+
+@app.get("/api/settings")
+def get_settings():
+    """Get all app settings."""
+    all_settings = get_all_settings()
+    # Mask API keys for security (only show last 4 chars)
+    masked = {}
+    for key, value in all_settings.items():
+        if 'api_key' in key.lower() and value:
+            masked[key] = f"****{value[-4:]}" if len(value) > 4 else "****"
+        else:
+            masked[key] = value
+    return {"settings": masked}
+
+
+@app.get("/api/settings/{key}")
+def get_setting_value(key: str):
+    """Get a specific setting."""
+    value = get_setting(key)
+    if value is None:
+        return {"key": key, "value": None}
+    # Mask API keys
+    if 'api_key' in key.lower() and value:
+        masked = f"****{value[-4:]}" if len(value) > 4 else "****"
+        return {"key": key, "value": masked, "is_set": True}
+    return {"key": key, "value": value}
+
+
+@app.post("/api/settings")
+def update_setting(setting: SettingUpdate):
+    """Update a single setting."""
+    set_setting(setting.key, setting.value)
+    return {"success": True, "key": setting.key}
+
+
+@app.post("/api/settings/ai")
+def update_ai_settings(ai_settings: AISettingsUpdate):
+    """Update AI provider and API key."""
+    set_setting("ai_provider", ai_settings.provider)
+    set_setting(f"{ai_settings.provider}_api_key", ai_settings.api_key)
+    return {
+        "success": True,
+        "provider": ai_settings.provider,
+        "api_key_set": True
+    }
+
+
+@app.get("/api/settings/ai")
+def get_ai_settings():
+    """Get current AI settings."""
+    provider = get_setting("ai_provider") or "google"
+
+    # Check which API keys are set
+    keys_status = {
+        "anthropic": bool(get_setting("anthropic_api_key")),
+        "openai": bool(get_setting("openai_api_key")),
+        "google": bool(get_setting("google_api_key"))
+    }
+
+    return {
+        "provider": provider,
+        "api_key_set": keys_status.get(provider, False),
+        "available_providers": keys_status
+    }
+
+
+@app.post("/api/settings/ai/test")
+def test_ai_connection():
+    """Test the AI connection with current settings."""
+    provider = get_setting("ai_provider") or "google"
+    api_key = get_setting(f"{provider}_api_key")
+
+    if not api_key:
+        raise HTTPException(status_code=400, detail=f"No API key set for {provider}")
+
+    # Basic validation - just check key format
+    if provider == "anthropic" and not api_key.startswith("sk-ant-"):
+        raise HTTPException(status_code=400, detail="Invalid Anthropic API key format")
+    if provider == "openai" and not api_key.startswith("sk-"):
+        raise HTTPException(status_code=400, detail="Invalid OpenAI API key format")
+
+    return {
+        "success": True,
+        "provider": provider,
+        "message": f"API key for {provider} is configured"
+    }
+
+
+# ==================== AI CHAT ====================
+
+def get_portfolio_context() -> str:
+    """Build context about user's portfolio for the AI."""
+    positions = get_open_positions()
+    holdings = get_stock_holdings()
+    stats = get_performance_stats()
+
+    context_parts = ["Current Portfolio Context:"]
+
+    if positions:
+        context_parts.append("\n**Open Positions:**")
+        for p in positions:
+            days_to_expiry = (datetime.strptime(p['expiry'], '%Y-%m-%d').date() - date.today()).days if p.get('expiry') else 0
+            context_parts.append(
+                f"- {p['underlying']} ${p['strike']} {p['option_type']} expiring {p['expiry']} "
+                f"({days_to_expiry}d) - {p['quantity']} contracts @ ${p['premium_collected']:.2f} premium"
+            )
+    else:
+        context_parts.append("\n**No open option positions.**")
+
+    if holdings:
+        context_parts.append("\n**Stock Holdings:**")
+        for h in holdings:
+            lots = h['quantity'] // 100
+            context_parts.append(
+                f"- {h['symbol']}: {h['quantity']} shares (avg cost: ${h.get('avg_cost', 0):.2f}) "
+                f"- {lots} covered call lots available"
+            )
+    else:
+        context_parts.append("\n**No stock holdings.**")
+
+    context_parts.append(f"\n**Performance:**")
+    context_parts.append(f"- Total trades: {stats.get('total_trades', 0)}")
+    context_parts.append(f"- Win rate: {stats.get('win_rate', 0):.1f}%")
+    context_parts.append(f"- Realized P&L: ${stats.get('total_realized_pnl', 0):.2f}")
+
+    return "\n".join(context_parts)
+
+
+async def call_google_ai(messages: List[ChatMessage], api_key: str) -> str:
+    """Call Google Gemini API."""
+    portfolio_context = get_portfolio_context()
+    full_system = f"{AI_SYSTEM_PROMPT}\n\n{portfolio_context}"
+
+    # Convert messages to Gemini format
+    contents = []
+    for msg in messages:
+        role = "user" if msg.role == "user" else "model"
+        contents.append({"role": role, "parts": [{"text": msg.content}]})
+
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}",
+            json={
+                "contents": contents,
+                "systemInstruction": {"parts": [{"text": full_system}]},
+                "generationConfig": {
+                    "temperature": 0.7,
+                    "maxOutputTokens": 2048,
+                }
+            },
+            timeout=60.0
+        )
+
+        if response.status_code != 200:
+            raise HTTPException(status_code=500, detail=f"Google AI error: {response.text}")
+
+        data = response.json()
+        return data["candidates"][0]["content"]["parts"][0]["text"]
+
+
+async def call_anthropic_ai(messages: List[ChatMessage], api_key: str) -> str:
+    """Call Anthropic Claude API."""
+    portfolio_context = get_portfolio_context()
+    full_system = f"{AI_SYSTEM_PROMPT}\n\n{portfolio_context}"
+
+    # Convert messages to Anthropic format
+    anthropic_messages = []
+    for msg in messages:
+        anthropic_messages.append({"role": msg.role, "content": msg.content})
+
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json"
+            },
+            json={
+                "model": "claude-3-5-sonnet-20241022",
+                "max_tokens": 2048,
+                "system": full_system,
+                "messages": anthropic_messages
+            },
+            timeout=60.0
+        )
+
+        if response.status_code != 200:
+            raise HTTPException(status_code=500, detail=f"Anthropic error: {response.text}")
+
+        data = response.json()
+        return data["content"][0]["text"]
+
+
+async def call_openai_ai(messages: List[ChatMessage], api_key: str) -> str:
+    """Call OpenAI API."""
+    portfolio_context = get_portfolio_context()
+    full_system = f"{AI_SYSTEM_PROMPT}\n\n{portfolio_context}"
+
+    # Convert messages to OpenAI format
+    openai_messages = [{"role": "system", "content": full_system}]
+    for msg in messages:
+        openai_messages.append({"role": msg.role, "content": msg.content})
+
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "model": "gpt-4o-mini",
+                "messages": openai_messages,
+                "max_tokens": 2048,
+                "temperature": 0.7
+            },
+            timeout=60.0
+        )
+
+        if response.status_code != 200:
+            raise HTTPException(status_code=500, detail=f"OpenAI error: {response.text}")
+
+        data = response.json()
+        return data["choices"][0]["message"]["content"]
+
+
+@app.post("/api/chat")
+async def chat(request: ChatRequest):
+    """Send a message to the AI advisor."""
+    provider = get_setting("ai_provider") or "google"
+    api_key = get_setting(f"{provider}_api_key")
+
+    if not api_key:
+        raise HTTPException(
+            status_code=400,
+            detail=f"No API key configured for {provider}. Please add your API key in Settings."
+        )
+
+    try:
+        if provider == "google":
+            response = await call_google_ai(request.messages, api_key)
+        elif provider == "anthropic":
+            response = await call_anthropic_ai(request.messages, api_key)
+        elif provider == "openai":
+            response = await call_openai_ai(request.messages, api_key)
+        else:
+            raise HTTPException(status_code=400, detail=f"Unknown provider: {provider}")
+
+        return {"response": response, "provider": provider}
+
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail="AI request timed out. Please try again.")
+    except Exception as e:
+        logger.error(f"Chat error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ==================== RUN SERVER ====================
+
+# Ensure DB tables exist on startup
+init_db()
 
 if __name__ == "__main__":
     import uvicorn

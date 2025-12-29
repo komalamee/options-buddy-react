@@ -30,49 +30,40 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Search, Plus, RefreshCw, TrendingUp, TrendingDown } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
-// Demo data
-const positions = [
-  {
-    id: 1,
-    underlying: 'TSLA',
-    optionType: 'CALL',
-    strike: 500,
-    expiration: '2026-03-20',
-    quantity: -1,
-    premiumCollected: 4638.32,
-    currentValue: 4200,
-    pnl: 438.32,
-    pnlPercent: 9.45,
-    openDate: '2024-12-01',
-    status: 'open',
-    daysToExpiry: 81,
-  },
-];
+// Position types
+interface Position {
+  id: number;
+  underlying: string;
+  optionType: 'CALL' | 'PUT';
+  strike: number;
+  expiration: string;
+  quantity: number;
+  premiumCollected: number;
+  currentValue?: number;
+  pnl: number;
+  pnlPercent: number;
+  openDate: string;
+  closeDate?: string;
+  closePremium?: number;
+  status: string;
+  daysToExpiry?: number;
+}
 
-const closedPositions = [
-  {
-    id: 101,
-    underlying: 'AAPL',
-    optionType: 'PUT',
-    strike: 180,
-    expiration: '2024-12-15',
-    quantity: -1,
-    premiumCollected: 320,
-    closePremium: 50,
-    pnl: 270,
-    pnlPercent: 84.4,
-    openDate: '2024-11-15',
-    closeDate: '2024-12-10',
-    status: 'closed',
-  },
-];
+interface StockHolding {
+  id: number;
+  symbol: string;
+  quantity: number;
+  avgCost: number;
+  currentPrice: number;
+  marketValue: number;
+  pnl: number;
+  pnlPercent: number;
+}
 
-const stockHoldings = [
-  { id: 1, symbol: 'TSLA', quantity: 158, avgCost: 339.04, currentPrice: 421.06, marketValue: 66820.15, pnl: 12991.27, pnlPercent: 24.17 },
-  { id: 2, symbol: 'NVDA', quantity: 44, avgCost: 100.13, currentPrice: 134.22, marketValue: 5905.68, pnl: 1500.04, pnlPercent: 34.07 },
-  { id: 3, symbol: 'COIN', quantity: 30, avgCost: 283.30, currentPrice: 257.84, marketValue: 7735.20, pnl: -763.80, pnlPercent: -8.99 },
-  { id: 4, symbol: 'MSTR', quantity: 21, avgCost: 293.81, currentPrice: 341.61, marketValue: 7173.81, pnl: 1003.80, pnlPercent: 16.27 },
-];
+// Empty arrays - data will come from API/backend
+const positions: Position[] = [];
+const closedPositions: Position[] = [];
+const stockHoldings: StockHolding[] = [];
 
 function formatCurrency(value: number) {
   return new Intl.NumberFormat('en-US', {
@@ -200,7 +191,7 @@ export default function PositionsPage() {
                       </TableCell>
                       <TableCell>${position.strike}</TableCell>
                       <TableCell>{position.expiration}</TableCell>
-                      <TableCell>{getDteBadge(position.daysToExpiry)}</TableCell>
+                      <TableCell>{position.daysToExpiry !== undefined && getDteBadge(position.daysToExpiry)}</TableCell>
                       <TableCell>{position.quantity}</TableCell>
                       <TableCell>{formatCurrency(position.premiumCollected)}</TableCell>
                       <TableCell>
@@ -299,7 +290,7 @@ export default function PositionsPage() {
                       <TableCell>{position.openDate}</TableCell>
                       <TableCell>{position.closeDate}</TableCell>
                       <TableCell>{formatCurrency(position.premiumCollected)}</TableCell>
-                      <TableCell>{formatCurrency(position.closePremium)}</TableCell>
+                      <TableCell>{position.closePremium !== undefined && formatCurrency(position.closePremium)}</TableCell>
                       <TableCell>
                         <PnlCell value={position.pnl} percent={position.pnlPercent} />
                       </TableCell>

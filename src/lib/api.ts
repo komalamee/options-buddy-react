@@ -325,6 +325,47 @@ class ApiClient {
   async getPortfolioSummary(): Promise<PortfolioSummary> {
     return this.request('/api/portfolio/summary');
   }
+
+  // ==================== Settings ====================
+
+  async getAISettings(): Promise<{
+    provider: string;
+    api_key_set: boolean;
+    available_providers: Record<string, boolean>;
+  }> {
+    return this.request('/api/settings/ai');
+  }
+
+  async saveAISettings(provider: string, apiKey: string): Promise<{
+    success: boolean;
+    provider: string;
+    api_key_set: boolean;
+  }> {
+    return this.request('/api/settings/ai', {
+      method: 'POST',
+      body: JSON.stringify({ provider, api_key: apiKey }),
+    });
+  }
+
+  async testAIConnection(): Promise<{
+    success: boolean;
+    provider: string;
+    message: string;
+  }> {
+    return this.request('/api/settings/ai/test', { method: 'POST' });
+  }
+
+  // ==================== AI Chat ====================
+
+  async sendChatMessage(messages: { role: string; content: string }[]): Promise<{
+    response: string;
+    provider: string;
+  }> {
+    return this.request('/api/chat', {
+      method: 'POST',
+      body: JSON.stringify({ messages }),
+    });
+  }
 }
 
 // Export singleton instance

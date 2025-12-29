@@ -6,21 +6,11 @@ import { AlertsCard } from '@/components/dashboard/alerts-card';
 import { HoldingsCard } from '@/components/dashboard/holdings-card';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Send, Sparkles } from 'lucide-react';
-import { useState } from 'react';
+import { Sparkles, ArrowRight } from 'lucide-react';
+import Link from 'next/link';
 import { usePortfolioStore } from '@/stores/portfolio-store';
 
-const quickQuestions = [
-  'What positions need attention?',
-  'Find covered call opportunities',
-  'Analyze my portfolio risk',
-  'Best trades for this week',
-];
-
 export default function DashboardPage() {
-  const [aiMessage, setAiMessage] = useState('');
-
   const {
     positions,
     stockHoldings,
@@ -64,7 +54,7 @@ export default function DashboardPage() {
       <div>
         <h1 className="text-3xl font-bold tracking-tight">Dashboard</h1>
         <p className="text-muted-foreground">
-          Portfolio overview and AI-powered insights
+          Portfolio overview and quick insights
         </p>
       </div>
 
@@ -80,7 +70,7 @@ export default function DashboardPage() {
 
       {/* Main Content Grid */}
       <div className="grid gap-6 lg:grid-cols-3">
-        {/* AI Advisor - Takes 2 columns */}
+        {/* AI Advisor CTA - Takes 2 columns */}
         <div className="lg:col-span-2">
           <Card className="h-full">
             <CardHeader>
@@ -93,45 +83,39 @@ export default function DashboardPage() {
               </p>
             </CardHeader>
             <CardContent className="space-y-4">
-              {/* Welcome message */}
+              {/* Summary */}
               <div className="rounded-lg bg-primary/10 p-4">
-                <p className="font-medium">Welcome! I'm your AI options advisor.</p>
+                <p className="font-medium">Portfolio Summary</p>
                 <p className="text-sm text-muted-foreground mt-1">
                   You have {summary.openPositions} open position{summary.openPositions !== 1 ? 's' : ''} and {stockHoldings.length} stock holding{stockHoldings.length !== 1 ? 's' : ''}.
                   {summary.ccLotsAvailable > 0 && ` ${summary.ccLotsAvailable} covered call lot${summary.ccLotsAvailable !== 1 ? 's' : ''} available.`}
-                  {' '}Ask me about trade ideas, position management, or market analysis.
                 </p>
               </div>
 
-              {/* Quick questions */}
-              <div className="space-y-2">
-                <p className="text-sm text-muted-foreground">Quick questions:</p>
-                <div className="flex flex-wrap gap-2">
-                  {quickQuestions.map((question, i) => (
-                    <Button
-                      key={i}
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setAiMessage(question)}
-                    >
-                      {question}
-                    </Button>
-                  ))}
+              {/* Quick insights */}
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="p-3 rounded-lg border">
+                  <p className="text-sm font-medium">Win Rate</p>
+                  <p className="text-2xl font-bold text-green-500">{summary.winRate.toFixed(1)}%</p>
+                  <p className="text-xs text-muted-foreground">{summary.totalTrades} total trades</p>
+                </div>
+                <div className="p-3 rounded-lg border">
+                  <p className="text-sm font-medium">Realized P&L</p>
+                  <p className={`text-2xl font-bold ${summary.realizedPnl >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                    ${summary.realizedPnl.toLocaleString()}
+                  </p>
+                  <p className="text-xs text-muted-foreground">Lifetime earnings</p>
                 </div>
               </div>
 
-              {/* Input */}
-              <div className="flex gap-2">
-                <Input
-                  placeholder="Ask about trade ideas, position management, or market analysis..."
-                  value={aiMessage}
-                  onChange={(e) => setAiMessage(e.target.value)}
-                  className="flex-1"
-                />
-                <Button>
-                  <Send className="h-4 w-4" />
+              {/* CTA to AI Advisor */}
+              <Link href="/advisor">
+                <Button className="w-full" size="lg">
+                  <Sparkles className="h-4 w-4 mr-2" />
+                  Open AI Advisor
+                  <ArrowRight className="h-4 w-4 ml-2" />
                 </Button>
-              </div>
+              </Link>
             </CardContent>
           </Card>
         </div>

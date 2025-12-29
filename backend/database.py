@@ -103,6 +103,15 @@ def init_db():
             )
         ''')
 
+        # App settings table (key-value store)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS app_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
         conn.commit()
 
 
@@ -414,6 +423,49 @@ def get_performance_stats() -> dict:
             'worst_trade': min(pnl_list, key=lambda x: x['pnl']) if pnl_list else None,
             'profit_factor': (total_wins / total_losses) if total_losses > 0 else float('inf')
         }
+
+
+# ==================== APP SETTINGS ====================
+
+def get_setting(key: str) -> Optional[str]:
+    """Get a setting value by key."""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('SELECT value FROM app_settings WHERE key = ?', (key,))
+        row = cursor.fetchone()
+        return row['value'] if row else None
+
+
+def set_setting(key: str, value: str) -> bool:
+    """Set a setting value."""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO app_settings (key, value, updated_at)
+            VALUES (?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(key) DO UPDATE SET
+                value = excluded.value,
+                updated_at = CURRENT_TIMESTAMP
+        ''', (key, value))
+        conn.commit()
+        return True
+
+
+def get_all_settings() -> dict:
+    """Get all settings as a dictionary."""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('SELECT key, value FROM app_settings')
+        return {row['key']: row['value'] for row in cursor.fetchall()}
+
+
+def delete_setting(key: str) -> bool:
+    """Delete a setting."""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM app_settings WHERE key = ?', (key,))
+        conn.commit()
+        return cursor.rowcount > 0
 
 
 # Initialize DB on module load

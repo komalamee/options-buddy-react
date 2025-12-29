@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
   Card,
   CardContent,
@@ -37,6 +37,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { usePortfolioStore } from '@/stores/portfolio-store';
+import { api } from '@/lib/api';
 
 export default function SettingsPage() {
   const {
@@ -55,6 +56,59 @@ export default function SettingsPage() {
   const [aiProvider, setAiProvider] = useState('google');
   const [apiKey, setApiKey] = useState('');
   const [syncMessage, setSyncMessage] = useState('');
+  const [aiSaving, setAiSaving] = useState(false);
+  const [aiTesting, setAiTesting] = useState(false);
+  const [aiKeySet, setAiKeySet] = useState(false);
+
+  // Load AI settings on mount
+  useEffect(() => {
+    const loadAISettings = async () => {
+      try {
+        const settings = await api.getAISettings();
+        setAiProvider(settings.provider);
+        setAiKeySet(settings.api_key_set);
+      } catch (err) {
+        console.error('Failed to load AI settings:', err);
+      }
+    };
+    loadAISettings();
+  }, []);
+
+  const handleSaveAISettings = async () => {
+    if (!apiKey.trim()) {
+      setSyncMessage('Please enter an API key');
+      setTimeout(() => setSyncMessage(''), 3000);
+      return;
+    }
+
+    setAiSaving(true);
+    try {
+      await api.saveAISettings(aiProvider, apiKey);
+      setAiKeySet(true);
+      setApiKey(''); // Clear the input after saving
+      setSyncMessage('AI settings saved successfully!');
+      setTimeout(() => setSyncMessage(''), 3000);
+    } catch (err) {
+      setSyncMessage(`Failed to save: ${err instanceof Error ? err.message : 'Unknown error'}`);
+      setTimeout(() => setSyncMessage(''), 5000);
+    } finally {
+      setAiSaving(false);
+    }
+  };
+
+  const handleTestAIConnection = async () => {
+    setAiTesting(true);
+    try {
+      const result = await api.testAIConnection();
+      setSyncMessage(result.message);
+      setTimeout(() => setSyncMessage(''), 3000);
+    } catch (err) {
+      setSyncMessage(`Test failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
+      setTimeout(() => setSyncMessage(''), 5000);
+    } finally {
+      setAiTesting(false);
+    }
+  };
 
   const handleConnect = async () => {
     const success = await connectIBKR(ibkrHost, parseInt(ibkrPort, 10));
@@ -292,18 +346,46 @@ export default function SettingsPage() {
                   type="password"
                   value={apiKey}
                   onChange={(e) => setApiKey(e.target.value)}
-                  placeholder="Enter your API key..."
+                  placeholder={aiKeySet ? "API key is saved (enter new key to update)" : "Enter your API key..."}
                 />
+                {aiKeySet && (
+                  <p className="text-sm text-green-500 flex items-center gap-1">
+                    <CheckCircle2 className="h-3 w-3" />
+                    API key configured for {aiProvider}
+                  </p>
+                )}
               </div>
 
               <div className="flex gap-2">
-                <Button variant="outline">
-                  <TestTube className="h-4 w-4 mr-2" />
-                  Test Connection
+                <Button
+                  variant="outline"
+                  onClick={handleTestAIConnection}
+                  disabled={aiTesting || !aiKeySet}
+                >
+                  {aiTesting ? (
+                    <>
+                      <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                      Testing...
+                    </>
+                  ) : (
+                    <>
+                      <TestTube className="h-4 w-4 mr-2" />
+                      Test Connection
+                    </>
+                  )}
                 </Button>
-                <Button>
-                  <Save className="h-4 w-4 mr-2" />
-                  Save
+                <Button onClick={handleSaveAISettings} disabled={aiSaving}>
+                  {aiSaving ? (
+                    <>
+                      <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                      Saving...
+                    </>
+                  ) : (
+                    <>
+                      <Save className="h-4 w-4 mr-2" />
+                      Save
+                    </>
+                  )}
                 </Button>
               </div>
             </CardContent>

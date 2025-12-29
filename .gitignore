@@ -59,7 +59,12 @@ ENV/
 # Backend
 backend/.env
 backend/data_store/*.db
+backend/data_store/*.db-journal
+backend/data_store/*.sqlite
 backend/*.log
+
+# Keep .gitkeep to preserve folder structure
+!backend/data_store/.gitkeep
 
 # IDE
 .idea/
