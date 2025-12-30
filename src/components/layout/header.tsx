@@ -4,16 +4,21 @@ import { Bell, Search, Moon, Sun } from 'lucide-react';
 import { useTheme } from 'next-themes';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Badge } from '@/components/ui/badge';
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { Badge } from '@/components/ui/badge';
+import { usePortfolioStore } from '@/stores/portfolio-store';
 
 export function Header() {
   const { setTheme, theme } = useTheme();
+  const { alerts } = usePortfolioStore();
+
+  // Count only critical and warning alerts
+  const alertCount = alerts.filter(a => a.type === 'critical' || a.type === 'warning').length;
 
   return (
     <header className="sticky top-0 z-30 flex h-16 items-center justify-between border-b border-border bg-background/95 px-6 backdrop-blur supports-[backdrop-filter]:bg-background/60">
@@ -30,15 +35,17 @@ export function Header() {
 
       {/* Right side actions */}
       <div className="flex items-center gap-2">
-        {/* Alerts */}
+        {/* Notifications - only show badge if there are alerts */}
         <Button variant="ghost" size="icon" className="relative">
           <Bell className="h-5 w-5" />
-          <Badge
-            variant="destructive"
-            className="absolute -right-1 -top-1 h-5 w-5 rounded-full p-0 text-xs"
-          >
-            2
-          </Badge>
+          {alertCount > 0 && (
+            <Badge
+              variant="destructive"
+              className="absolute -right-1 -top-1 h-5 w-5 rounded-full p-0 text-xs flex items-center justify-center"
+            >
+              {alertCount}
+            </Badge>
+          )}
         </Button>
 
         {/* Theme toggle */}

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   Card,
   CardContent,
@@ -8,358 +8,459 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card';
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { Slider } from '@/components/ui/slider';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
+import { Skeleton } from '@/components/ui/skeleton';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Switch } from '@/components/ui/switch';
-import {
-  Search,
-  Play,
-  RefreshCw,
-  Filter,
-  TrendingUp,
-  Zap,
-  AlertCircle,
-} from 'lucide-react';
+import { AlertCircle, RefreshCw } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { usePortfolioStore } from '@/stores/portfolio-store';
+import { api } from '@/lib/api';
+import Link from 'next/link';
 
-// Demo scan results
-const scanResults = [
-  {
-    symbol: 'TSLA',
-    optionType: 'PUT',
-    strike: 380,
-    expiration: '2025-01-17',
-    bid: 4.20,
-    ask: 4.45,
-    iv: 0.52,
-    delta: -0.25,
-    theta: -0.12,
-    dte: 19,
-    score: 85,
-  },
-  {
-    symbol: 'NVDA',
-    optionType: 'PUT',
-    strike: 125,
-    expiration: '2025-01-17',
-    bid: 2.80,
-    ask: 3.05,
-    iv: 0.48,
-    delta: -0.22,
-    theta: -0.08,
-    dte: 19,
-    score: 78,
-  },
-  {
-    symbol: 'AAPL',
-    optionType: 'CALL',
-    strike: 200,
-    expiration: '2025-01-17',
-    bid: 1.95,
-    ask: 2.15,
-    iv: 0.28,
-    delta: 0.30,
-    theta: -0.05,
-    dte: 19,
-    score: 72,
-  },
-  {
-    symbol: 'AMD',
-    optionType: 'PUT',
-    strike: 130,
-    expiration: '2025-01-17',
-    bid: 3.10,
-    ask: 3.35,
-    iv: 0.45,
-    delta: -0.28,
-    theta: -0.10,
-    dte: 19,
-    score: 68,
-  },
-];
+import { SymbolSearch } from '@/components/scanner/SymbolSearch';
+import { FilterBar } from '@/components/scanner/FilterBar';
+import { OptionsChain } from '@/components/scanner/OptionsChain';
+import { HighlightLegend } from '@/components/scanner/HighlightLegend';
+import {
+  FilterConfig,
+  FilterPreset,
+  OptionsChainData,
+  OptionsChainRow,
+  OptionLeg,
+  DEFAULT_FILTERS,
+  DEFAULT_WEEKLY_HIGH_IV_PRESET,
+  PRESETS_STORAGE_KEY,
+} from '@/types/scanner';
 
-const watchlists = [
-  { id: 'tech', name: 'Tech Giants', symbols: ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'NVDA'] },
-  { id: 'ev', name: 'EV & Clean Energy', symbols: ['TSLA', 'RIVN', 'LCID', 'NIO'] },
-  { id: 'semis', name: 'Semiconductors', symbols: ['NVDA', 'AMD', 'INTC', 'TSM', 'AVGO'] },
-  { id: 'custom', name: 'My Watchlist', symbols: ['TSLA', 'NVDA', 'AMD', 'COIN', 'MSTR'] },
-];
+// Calculate days to expiration
+function calculateDte(expiry: string): number {
+  const expiryDate = new Date(expiry);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const diffTime = expiryDate.getTime() - today.getTime();
+  return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+}
 
-function getScoreBadge(score: number) {
-  if (score >= 80) {
-    return <Badge className="bg-green-500 hover:bg-green-600">{score}</Badge>;
-  }
-  if (score >= 60) {
-    return <Badge className="bg-yellow-500 hover:bg-yellow-600">{score}</Badge>;
-  }
-  return <Badge variant="destructive">{score}</Badge>;
+// Format expiration date for display
+function formatExpiration(expiry: string): string {
+  const date = new Date(expiry);
+  return date.toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+  });
+}
+
+// Check if expiration is a weekly (Friday that's not 3rd Friday of month)
+function isWeeklyExpiration(expiry: string): boolean {
+  const date = new Date(expiry);
+  const dayOfWeek = date.getDay();
+  if (dayOfWeek !== 5) return false; // Not Friday
+
+  // Check if it's the 3rd Friday (monthly)
+  const firstDay = new Date(date.getFullYear(), date.getMonth(), 1);
+  const firstFriday = new Date(firstDay);
+  const daysUntilFriday = (5 - firstDay.getDay() + 7) % 7;
+  firstFriday.setDate(1 + daysUntilFriday);
+  const thirdFriday = new Date(firstFriday);
+  thirdFriday.setDate(firstFriday.getDate() + 14);
+
+  return date.getDate() !== thirdFriday.getDate();
+}
+
+// Map API response to OptionLeg
+function mapOptionData(data: any): OptionLeg {
+  return {
+    bid: data.bid || 0,
+    ask: data.ask || 0,
+    iv: data.iv || 0,
+    delta: data.delta || 0,
+    theta: data.theta || 0,
+    gamma: data.gamma || 0,
+    vega: data.vega || 0,
+    volume: data.volume || 0,
+    openInterest: data.open_interest || 0,
+  };
 }
 
 export default function ScannerPage() {
-  const [isScanning, setIsScanning] = useState(false);
-  const [selectedWatchlist, setSelectedWatchlist] = useState('custom');
-  const [strategyType, setStrategyType] = useState('csp');
-  const [minDte, setMinDte] = useState([14]);
-  const [maxDte, setMaxDte] = useState([45]);
-  const [minDelta, setMinDelta] = useState([0.15]);
-  const [maxDelta, setMaxDelta] = useState([0.35]);
-  const [connected, setConnected] = useState(false);
+  // ===== STATE =====
+  // Symbol & Data
+  const [symbol, setSymbol] = useState('');
+  const [stockPrice, setStockPrice] = useState<number | null>(null);
+  const [expirations, setExpirations] = useState<string[]>([]);
+  const [selectedExpiration, setSelectedExpiration] = useState<string | null>(null);
+  const [chainData, setChainData] = useState<OptionsChainData | null>(null);
 
-  const handleScan = async () => {
-    setIsScanning(true);
-    // Simulate scan
-    await new Promise((resolve) => setTimeout(resolve, 2000));
-    setIsScanning(false);
+  // Loading/Error
+  const [isLoadingExpirations, setIsLoadingExpirations] = useState(false);
+  const [isLoadingChain, setIsLoadingChain] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Filters
+  const [filters, setFilters] = useState<FilterConfig>(DEFAULT_FILTERS);
+
+  // Presets
+  const [presets, setPresets] = useState<FilterPreset[]>([]);
+  const [selectedPresetId, setSelectedPresetId] = useState<string | null>(null);
+
+  // IBKR Status
+  const { ibkrStatus, fetchIBKRStatus } = usePortfolioStore();
+
+  // ===== EFFECTS =====
+
+  // Load IBKR status on mount
+  useEffect(() => {
+    fetchIBKRStatus();
+  }, [fetchIBKRStatus]);
+
+  // Load presets from localStorage on mount
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(PRESETS_STORAGE_KEY);
+      if (saved) {
+        setPresets(JSON.parse(saved));
+      } else {
+        setPresets([DEFAULT_WEEKLY_HIGH_IV_PRESET]);
+      }
+    } catch {
+      setPresets([DEFAULT_WEEKLY_HIGH_IV_PRESET]);
+    }
+  }, []);
+
+  // Save presets to localStorage when changed
+  useEffect(() => {
+    if (presets.length > 0) {
+      localStorage.setItem(PRESETS_STORAGE_KEY, JSON.stringify(presets));
+    }
+  }, [presets]);
+
+  // ===== FILTERED EXPIRATIONS =====
+  const filteredExpirations = useMemo(() => {
+    return expirations.filter((exp) => {
+      const dte = calculateDte(exp);
+
+      // Filter by DTE range
+      if (dte < filters.minDte || dte > filters.maxDte) {
+        return false;
+      }
+
+      // Filter weekly only
+      if (filters.weeklyOnly && !isWeeklyExpiration(exp)) {
+        return false;
+      }
+
+      return true;
+    });
+  }, [expirations, filters.minDte, filters.maxDte, filters.weeklyOnly]);
+
+  // ===== HANDLERS =====
+
+  const loadOptionsChain = useCallback(
+    async (expiry: string) => {
+      if (!symbol || !stockPrice) return;
+
+      setIsLoadingChain(true);
+      setError(null);
+
+      try {
+        // Get strikes for this expiration
+        const strikesResult = await api.getOptionStrikes(symbol, expiry);
+        const strikes = strikesResult.strikes;
+
+        // Limit to strikes within reasonable range of current price (±30%)
+        const minStrike = stockPrice * 0.7;
+        const maxStrike = stockPrice * 1.3;
+        const relevantStrikes = strikes.filter(
+          (s) => s >= minStrike && s <= maxStrike
+        );
+
+        // Fetch call and put data for each strike in parallel
+        const rows: OptionsChainRow[] = await Promise.all(
+          relevantStrikes.map(async (strike) => {
+            const [callData, putData] = await Promise.all([
+              api.getOptionData(symbol, expiry, strike, 'C').catch(() => null),
+              api.getOptionData(symbol, expiry, strike, 'P').catch(() => null),
+            ]);
+
+            return {
+              strike,
+              isItm: {
+                call: strike < stockPrice,
+                put: strike > stockPrice,
+              },
+              call: callData ? mapOptionData(callData) : null,
+              put: putData ? mapOptionData(putData) : null,
+            };
+          })
+        );
+
+        // Sort by strike price
+        rows.sort((a, b) => a.strike - b.strike);
+
+        setChainData({
+          expiration: expiry,
+          dte: calculateDte(expiry),
+          rows,
+        });
+      } catch (err) {
+        setError(
+          err instanceof Error ? err.message : 'Failed to load options chain'
+        );
+      } finally {
+        setIsLoadingChain(false);
+      }
+    },
+    [symbol, stockPrice]
+  );
+
+  const handleSearch = async () => {
+    if (!symbol.trim() || !ibkrStatus.connected) return;
+
+    setIsLoadingExpirations(true);
+    setError(null);
+    setChainData(null);
+    setExpirations([]);
+    setSelectedExpiration(null);
+
+    try {
+      // Fetch stock price and expirations in parallel
+      const [priceResult, expirationsResult] = await Promise.all([
+        api.getStockPrice(symbol.toUpperCase()),
+        api.getOptionExpirations(symbol.toUpperCase()),
+      ]);
+
+      setStockPrice(priceResult.price);
+      setExpirations(expirationsResult.expirations);
+
+      // Auto-select first expiration within filter range
+      const validExps = expirationsResult.expirations.filter((exp) => {
+        const dte = calculateDte(exp);
+        return dte >= filters.minDte && dte <= filters.maxDte;
+      });
+
+      if (validExps.length > 0) {
+        setSelectedExpiration(validExps[0]);
+        // Load chain data will be triggered by useEffect
+      }
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : 'Failed to load options data'
+      );
+    } finally {
+      setIsLoadingExpirations(false);
+    }
   };
 
+  // Load chain when expiration changes
+  useEffect(() => {
+    if (selectedExpiration && stockPrice) {
+      loadOptionsChain(selectedExpiration);
+    }
+  }, [selectedExpiration, stockPrice, loadOptionsChain]);
+
+  const handleExpirationChange = (expiry: string) => {
+    setSelectedExpiration(expiry);
+  };
+
+  const handlePresetSave = (name: string) => {
+    const newPreset: FilterPreset = {
+      id: `preset-${Date.now()}`,
+      name,
+      config: { ...filters },
+      createdAt: new Date().toISOString(),
+    };
+    setPresets([...presets, newPreset]);
+    setSelectedPresetId(newPreset.id);
+  };
+
+  const handlePresetDelete = (id: string) => {
+    setPresets(presets.filter((p) => p.id !== id));
+    if (selectedPresetId === id) {
+      setSelectedPresetId(null);
+    }
+  };
+
+  const handlePresetSelect = (id: string | null) => {
+    setSelectedPresetId(id);
+    if (id) {
+      const preset = presets.find((p) => p.id === id);
+      if (preset) {
+        setFilters(preset.config);
+      }
+    }
+  };
+
+  const handleFiltersChange = (newFilters: FilterConfig) => {
+    setFilters(newFilters);
+    // Clear preset selection when filters are manually changed
+    setSelectedPresetId(null);
+  };
+
+  // ===== RENDER =====
   return (
     <div className="space-y-6">
       {/* Page Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight">Scanner</h1>
+          <h1 className="text-3xl font-bold tracking-tight">Options Scanner</h1>
           <p className="text-muted-foreground">
-            Find options opportunities matching your criteria
+            Search for a symbol to view its options chain
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <Badge variant={connected ? 'default' : 'destructive'} className={cn(connected && 'bg-green-500')}>
-            {connected ? 'IBKR Connected' : 'IBKR Disconnected'}
-          </Badge>
-        </div>
+        <Badge
+          variant={ibkrStatus.connected ? 'default' : 'destructive'}
+          className={cn(ibkrStatus.connected && 'bg-green-500')}
+        >
+          {ibkrStatus.connected ? 'IBKR Connected' : 'IBKR Disconnected'}
+        </Badge>
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-4">
-        {/* Filters Sidebar */}
-        <Card className="lg:col-span-1">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Filter className="h-5 w-5" />
-              Scan Filters
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-6">
-            {/* Watchlist */}
-            <div className="space-y-2">
-              <Label>Watchlist</Label>
-              <Select value={selectedWatchlist} onValueChange={setSelectedWatchlist}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {watchlists.map((wl) => (
-                    <SelectItem key={wl.id} value={wl.id}>
-                      {wl.name} ({wl.symbols.length})
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
+      {/* Search & Filters Card */}
+      <Card>
+        <CardContent className="pt-6 space-y-4">
+          {/* Symbol Search */}
+          <SymbolSearch
+            value={symbol}
+            onChange={setSymbol}
+            onSearch={handleSearch}
+            isLoading={isLoadingExpirations}
+            disabled={!ibkrStatus.connected}
+          />
 
-            {/* Strategy */}
-            <div className="space-y-2">
-              <Label>Strategy</Label>
-              <Select value={strategyType} onValueChange={setStrategyType}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="csp">Cash Secured Puts</SelectItem>
-                  <SelectItem value="cc">Covered Calls</SelectItem>
-                  <SelectItem value="ic">Iron Condors</SelectItem>
-                  <SelectItem value="ps">Put Spreads</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
+          {/* Filter Bar */}
+          <FilterBar
+            filters={filters}
+            onFiltersChange={handleFiltersChange}
+            presets={presets}
+            selectedPresetId={selectedPresetId}
+            onPresetSelect={handlePresetSelect}
+            onPresetSave={handlePresetSave}
+            onPresetDelete={handlePresetDelete}
+          />
+        </CardContent>
+      </Card>
 
-            {/* DTE Range */}
-            <div className="space-y-4">
-              <Label>Days to Expiration</Label>
-              <div className="space-y-2">
-                <div className="flex justify-between text-sm text-muted-foreground">
-                  <span>Min: {minDte[0]}d</span>
-                  <span>Max: {maxDte[0]}d</span>
-                </div>
-                <Slider
-                  value={minDte}
-                  onValueChange={setMinDte}
-                  min={1}
-                  max={90}
-                  step={1}
-                />
-                <Slider
-                  value={maxDte}
-                  onValueChange={setMaxDte}
-                  min={1}
-                  max={90}
-                  step={1}
-                />
-              </div>
-            </div>
+      {/* IBKR Connection Warning */}
+      {!ibkrStatus.connected && (
+        <Alert variant="destructive">
+          <AlertCircle className="h-4 w-4" />
+          <AlertTitle>IBKR Not Connected</AlertTitle>
+          <AlertDescription className="flex items-center justify-between">
+            <span>Connect to IBKR to search for options data.</span>
+            <Link href="/settings">
+              <Button variant="outline" size="sm">
+                Go to Settings
+              </Button>
+            </Link>
+          </AlertDescription>
+        </Alert>
+      )}
 
-            {/* Delta Range */}
-            <div className="space-y-4">
-              <Label>Delta Range</Label>
-              <div className="space-y-2">
-                <div className="flex justify-between text-sm text-muted-foreground">
-                  <span>Min: {minDelta[0].toFixed(2)}</span>
-                  <span>Max: {maxDelta[0].toFixed(2)}</span>
-                </div>
-                <Slider
-                  value={minDelta}
-                  onValueChange={setMinDelta}
-                  min={0.05}
-                  max={0.50}
-                  step={0.01}
-                />
-                <Slider
-                  value={maxDelta}
-                  onValueChange={setMaxDelta}
-                  min={0.05}
-                  max={0.50}
-                  step={0.01}
-                />
-              </div>
-            </div>
-
-            {/* Quick Filters */}
-            <div className="space-y-3">
-              <Label>Quick Filters</Label>
-              <div className="flex items-center justify-between">
-                <span className="text-sm">High IV Only</span>
-                <Switch />
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-sm">Weekly Options</span>
-                <Switch />
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-sm">High Volume</span>
-                <Switch />
-              </div>
-            </div>
-
-            {/* Scan Button */}
-            <Button
-              onClick={handleScan}
-              disabled={isScanning || !connected}
-              className="w-full"
-              size="lg"
-            >
-              {isScanning ? (
-                <>
-                  <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
-                  Scanning...
-                </>
-              ) : (
-                <>
-                  <Play className="h-4 w-4 mr-2" />
-                  Scan {watchlists.find((w) => w.id === selectedWatchlist)?.symbols.length || 0} Symbols
-                </>
-              )}
+      {/* Error Display */}
+      {error && (
+        <Alert variant="destructive">
+          <AlertCircle className="h-4 w-4" />
+          <AlertTitle>Error</AlertTitle>
+          <AlertDescription className="flex items-center justify-between">
+            <span>{error}</span>
+            <Button variant="outline" size="sm" onClick={handleSearch}>
+              <RefreshCw className="h-4 w-4 mr-2" />
+              Retry
             </Button>
+          </AlertDescription>
+        </Alert>
+      )}
 
-            {!connected && (
-              <p className="text-sm text-muted-foreground text-center">
-                Connect to IBKR in Settings to scan live data
-              </p>
+      {/* Highlight Legend */}
+      {(expirations.length > 0 || chainData) && <HighlightLegend />}
+
+      {/* Results Section */}
+      {stockPrice !== null && expirations.length > 0 && (
+        <Card>
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <div>
+                <CardTitle>
+                  {symbol} Options Chain
+                </CardTitle>
+                <CardDescription>
+                  Current Price: ${stockPrice.toFixed(2)} | {filteredExpirations.length} expirations available
+                </CardDescription>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => selectedExpiration && loadOptionsChain(selectedExpiration)}
+                disabled={isLoadingChain || !selectedExpiration}
+              >
+                <RefreshCw className={cn('h-4 w-4 mr-2', isLoadingChain && 'animate-spin')} />
+                Refresh
+              </Button>
+            </div>
+          </CardHeader>
+          <CardContent>
+            {filteredExpirations.length === 0 ? (
+              <div className="text-center py-8 text-muted-foreground">
+                No expirations match the current DTE filter ({filters.minDte}-{filters.maxDte} days)
+              </div>
+            ) : (
+              <Tabs
+                value={selectedExpiration || undefined}
+                onValueChange={handleExpirationChange}
+              >
+                <TabsList className="flex-wrap h-auto gap-1 mb-4">
+                  {filteredExpirations.slice(0, 8).map((exp) => (
+                    <TabsTrigger key={exp} value={exp} className="text-xs">
+                      {formatExpiration(exp)} ({calculateDte(exp)}d)
+                    </TabsTrigger>
+                  ))}
+                  {filteredExpirations.length > 8 && (
+                    <span className="text-xs text-muted-foreground px-2">
+                      +{filteredExpirations.length - 8} more
+                    </span>
+                  )}
+                </TabsList>
+
+                {filteredExpirations.map((exp) => (
+                  <TabsContent key={exp} value={exp}>
+                    {isLoadingChain ? (
+                      <div className="space-y-2">
+                        <Skeleton className="h-10 w-full" />
+                        <Skeleton className="h-10 w-full" />
+                        <Skeleton className="h-10 w-full" />
+                        <Skeleton className="h-10 w-full" />
+                        <Skeleton className="h-10 w-full" />
+                      </div>
+                    ) : chainData && chainData.expiration === exp ? (
+                      <OptionsChain
+                        symbol={symbol}
+                        stockPrice={stockPrice}
+                        chainData={chainData}
+                        filters={filters}
+                      />
+                    ) : null}
+                  </TabsContent>
+                ))}
+              </Tabs>
             )}
           </CardContent>
         </Card>
+      )}
 
-        {/* Results */}
-        <div className="lg:col-span-3 space-y-4">
-          <Card>
-            <CardHeader>
-              <div className="flex items-center justify-between">
-                <div>
-                  <CardTitle>Scan Results</CardTitle>
-                  <CardDescription>
-                    {scanResults.length} opportunities found
-                  </CardDescription>
-                </div>
-                <Button variant="outline" size="sm">
-                  <RefreshCw className="h-4 w-4 mr-2" />
-                  Refresh
-                </Button>
-              </div>
-            </CardHeader>
-            <CardContent className="p-0">
-              {scanResults.length > 0 ? (
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Symbol</TableHead>
-                      <TableHead>Type</TableHead>
-                      <TableHead>Strike</TableHead>
-                      <TableHead>Exp</TableHead>
-                      <TableHead>DTE</TableHead>
-                      <TableHead>Bid/Ask</TableHead>
-                      <TableHead>IV</TableHead>
-                      <TableHead>Delta</TableHead>
-                      <TableHead>Score</TableHead>
-                      <TableHead></TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {scanResults.map((result, idx) => (
-                      <TableRow key={idx}>
-                        <TableCell className="font-semibold">{result.symbol}</TableCell>
-                        <TableCell>
-                          <Badge variant={result.optionType === 'CALL' ? 'default' : 'secondary'}>
-                            {result.optionType}
-                          </Badge>
-                        </TableCell>
-                        <TableCell>${result.strike}</TableCell>
-                        <TableCell>{result.expiration}</TableCell>
-                        <TableCell>{result.dte}d</TableCell>
-                        <TableCell>
-                          ${result.bid.toFixed(2)} / ${result.ask.toFixed(2)}
-                        </TableCell>
-                        <TableCell>{(result.iv * 100).toFixed(0)}%</TableCell>
-                        <TableCell>{result.delta.toFixed(2)}</TableCell>
-                        <TableCell>{getScoreBadge(result.score)}</TableCell>
-                        <TableCell>
-                          <Button variant="ghost" size="sm">
-                            <Zap className="h-4 w-4" />
-                          </Button>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              ) : (
-                <div className="flex flex-col items-center justify-center py-12">
-                  <AlertCircle className="h-12 w-12 text-muted-foreground mb-4" />
-                  <p className="text-lg font-medium">No results yet</p>
-                  <p className="text-sm text-muted-foreground">
-                    Configure your filters and click Scan to find opportunities
-                  </p>
-                </div>
-              )}
-            </CardContent>
-          </Card>
-        </div>
-      </div>
+      {/* Empty State */}
+      {ibkrStatus.connected && expirations.length === 0 && !isLoadingExpirations && !error && (
+        <Card>
+          <CardContent className="flex flex-col items-center justify-center py-12">
+            <AlertCircle className="h-12 w-12 text-muted-foreground mb-4" />
+            <p className="text-lg font-medium">Enter a symbol to get started</p>
+            <p className="text-sm text-muted-foreground">
+              Type a stock symbol above and click Search to view its options chain
+            </p>
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 }

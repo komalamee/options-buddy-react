@@ -10,18 +10,14 @@ import {
   LineChart,
   Wallet,
   TrendingUp,
-  Lightbulb,
   Settings,
-  Activity,
   RefreshCw,
 } from 'lucide-react';
 
 const navigation = [
   { name: 'Dashboard', href: '/', icon: LayoutDashboard },
-  { name: 'Advisor', href: '/advisor', icon: Activity },
   { name: 'Positions', href: '/positions', icon: Wallet },
   { name: 'Scanner', href: '/scanner', icon: TrendingUp },
-  { name: 'Ideas', href: '/ideas', icon: Lightbulb },
   { name: 'Performance', href: '/performance', icon: LineChart },
   { name: 'Settings', href: '/settings', icon: Settings },
 ];

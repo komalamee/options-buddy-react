@@ -53,12 +53,19 @@ export default function SettingsPage() {
   const [ibkrHost, setIbkrHost] = useState(ibkrStatus.host || '127.0.0.1');
   const [ibkrPort, setIbkrPort] = useState(String(ibkrStatus.port || 4001));
   const [selectedAccount, setSelectedAccount] = useState('');
+  const [accountLoaded, setAccountLoaded] = useState(false);
   const [aiProvider, setAiProvider] = useState('google');
   const [apiKey, setApiKey] = useState('');
   const [syncMessage, setSyncMessage] = useState('');
   const [aiSaving, setAiSaving] = useState(false);
   const [aiTesting, setAiTesting] = useState(false);
   const [aiKeySet, setAiKeySet] = useState(false);
+
+  // Notification settings
+  const [expiringAlerts, setExpiringAlerts] = useState(true);
+  const [pnlAlerts, setPnlAlerts] = useState(true);
+  const [marketReminder, setMarketReminder] = useState(false);
+  const [notificationsLoaded, setNotificationsLoaded] = useState(false);
 
   // Load AI settings on mount
   useEffect(() => {
@@ -73,6 +80,72 @@ export default function SettingsPage() {
     };
     loadAISettings();
   }, []);
+
+  // Load notification settings on mount
+  useEffect(() => {
+    const loadNotificationSettings = async () => {
+      try {
+        const [expiring, pnl, market] = await Promise.all([
+          fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/settings/alert_expiring`).then(r => r.json()),
+          fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/settings/alert_pnl`).then(r => r.json()),
+          fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/settings/alert_market_reminder`).then(r => r.json()),
+        ]);
+        setExpiringAlerts(expiring.value !== 'false');
+        setPnlAlerts(pnl.value !== 'false');
+        setMarketReminder(market.value === 'true');
+        setNotificationsLoaded(true);
+      } catch (err) {
+        console.error('Failed to load notification settings:', err);
+        setNotificationsLoaded(true);
+      }
+    };
+    loadNotificationSettings();
+  }, []);
+
+  // Load selected account on mount
+  useEffect(() => {
+    const loadSelectedAccount = async () => {
+      try {
+        const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/settings/selected_ibkr_account`);
+        const data = await response.json();
+        if (data.value) {
+          setSelectedAccount(data.value);
+        }
+        setAccountLoaded(true);
+      } catch (err) {
+        console.error('Failed to load selected account:', err);
+        setAccountLoaded(true);
+      }
+    };
+    loadSelectedAccount();
+  }, []);
+
+  // Save notification setting
+  const saveNotificationSetting = async (key: string, value: boolean) => {
+    try {
+      await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/settings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key, value: String(value) }),
+      });
+    } catch (err) {
+      console.error(`Failed to save ${key}:`, err);
+    }
+  };
+
+  // Save selected IBKR account
+  const handleAccountChange = async (account: string) => {
+    setSelectedAccount(account);
+    try {
+      await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/settings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: 'selected_ibkr_account', value: account }),
+      });
+    } catch (err) {
+      console.error('Failed to save selected account:', err);
+    }
+  };
 
   const handleSaveAISettings = async () => {
     if (!apiKey.trim()) {
@@ -275,23 +348,29 @@ export default function SettingsPage() {
             <Card>
               <CardHeader>
                 <CardTitle>Account Selection</CardTitle>
-                <CardDescription>Select which account to use for trading data</CardDescription>
+                <CardDescription>Select which account to use for syncing positions</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="space-y-2">
                   <Label>Account</Label>
-                  <Select value={selectedAccount} onValueChange={setSelectedAccount}>
+                  <Select value={selectedAccount} onValueChange={handleAccountChange} disabled={!accountLoaded}>
                     <SelectTrigger>
-                      <SelectValue placeholder="Select account (or use all)" />
+                      <SelectValue placeholder={`Default: ${ibkrStatus.accounts[0]}`} />
                     </SelectTrigger>
                     <SelectContent>
-                      {ibkrStatus.accounts.map((account) => (
+                      {ibkrStatus.accounts.map((account, idx) => (
                         <SelectItem key={account} value={account}>
-                          {account}
+                          {account}{idx === 0 ? ' (default)' : ''}
                         </SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
+                  <p className="text-xs text-muted-foreground">
+                    {selectedAccount
+                      ? `Using: ${selectedAccount}`
+                      : `No account selected - will use default: ${ibkrStatus.accounts[0]}`
+                    }
+                  </p>
                 </div>
                 {ibkrStatus.lastSync && (
                   <p className="text-sm text-muted-foreground">
@@ -407,7 +486,14 @@ export default function SettingsPage() {
                     Alert when positions are expiring within 7 days
                   </p>
                 </div>
-                <Switch defaultChecked />
+                <Switch
+                  checked={expiringAlerts}
+                  onCheckedChange={(checked) => {
+                    setExpiringAlerts(checked);
+                    saveNotificationSetting('alert_expiring', checked);
+                  }}
+                  disabled={!notificationsLoaded}
+                />
               </div>
               <Separator />
               <div className="flex items-center justify-between">
@@ -417,7 +503,14 @@ export default function SettingsPage() {
                     Alert when positions hit profit/loss targets
                   </p>
                 </div>
-                <Switch defaultChecked />
+                <Switch
+                  checked={pnlAlerts}
+                  onCheckedChange={(checked) => {
+                    setPnlAlerts(checked);
+                    saveNotificationSetting('alert_pnl', checked);
+                  }}
+                  disabled={!notificationsLoaded}
+                />
               </div>
               <Separator />
               <div className="flex items-center justify-between">
@@ -427,7 +520,14 @@ export default function SettingsPage() {
                     Daily reminder at market open
                   </p>
                 </div>
-                <Switch />
+                <Switch
+                  checked={marketReminder}
+                  onCheckedChange={(checked) => {
+                    setMarketReminder(checked);
+                    saveNotificationSetting('alert_market_reminder', checked);
+                  }}
+                  disabled={!notificationsLoaded}
+                />
               </div>
             </CardContent>
           </Card>

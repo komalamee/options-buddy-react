@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
   Table,
   TableBody,
@@ -29,41 +29,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Search, Plus, RefreshCw, TrendingUp, TrendingDown } from 'lucide-react';
 import { cn } from '@/lib/utils';
-
-// Position types
-interface Position {
-  id: number;
-  underlying: string;
-  optionType: 'CALL' | 'PUT';
-  strike: number;
-  expiration: string;
-  quantity: number;
-  premiumCollected: number;
-  currentValue?: number;
-  pnl: number;
-  pnlPercent: number;
-  openDate: string;
-  closeDate?: string;
-  closePremium?: number;
-  status: string;
-  daysToExpiry?: number;
-}
-
-interface StockHolding {
-  id: number;
-  symbol: string;
-  quantity: number;
-  avgCost: number;
-  currentPrice: number;
-  marketValue: number;
-  pnl: number;
-  pnlPercent: number;
-}
-
-// Empty arrays - data will come from API/backend
-const positions: Position[] = [];
-const closedPositions: Position[] = [];
-const stockHoldings: StockHolding[] = [];
+import { usePortfolioStore } from '@/stores/portfolio-store';
 
 function formatCurrency(value: number) {
   return new Intl.NumberFormat('en-US', {
@@ -90,7 +56,8 @@ function PnlCell({ value, percent }: { value: number; percent?: number }) {
   );
 }
 
-function getDteBadge(dte: number) {
+function getDteBadge(dte: number | undefined) {
+  if (dte === undefined) return null;
   if (dte <= 3) {
     return <Badge variant="destructive">{dte}d CRITICAL</Badge>;
   }
@@ -107,6 +74,52 @@ export default function PositionsPage() {
   const [searchTerm, setSearchTerm] = useState('');
   const [filter, setFilter] = useState('all');
 
+  const {
+    positions,
+    closedPositions,
+    stockHoldings,
+    ibkrStatus,
+    isSyncing,
+    error,
+    fetchPositions,
+    fetchClosedPositions,
+    fetchHoldings,
+    fetchIBKRStatus,
+    syncWithIBKR,
+  } = usePortfolioStore();
+
+  // Load data on mount
+  useEffect(() => {
+    fetchIBKRStatus();
+    fetchPositions();
+    fetchClosedPositions();
+    fetchHoldings();
+  }, [fetchIBKRStatus, fetchPositions, fetchClosedPositions, fetchHoldings]);
+
+  const handleSync = async () => {
+    const success = await syncWithIBKR();
+    if (success) {
+      // Data is automatically refreshed in the store
+    }
+  };
+
+  // Filter positions based on search and filter
+  const filteredPositions = positions.filter((pos) => {
+    const matchesSearch = pos.underlying.toLowerCase().includes(searchTerm.toLowerCase());
+    if (!matchesSearch) return false;
+
+    switch (filter) {
+      case 'expiring':
+        return pos.days_to_expiry !== undefined && pos.days_to_expiry <= 14;
+      case 'profitable':
+        return true; // Would need current value to determine
+      case 'losing':
+        return false; // Would need current value to determine
+      default:
+        return true;
+    }
+  });
+
   return (
     <div className="space-y-6">
       {/* Page Header */}
@@ -118,9 +131,23 @@ export default function PositionsPage() {
           </p>
         </div>
         <div className="flex gap-2">
-          <Button variant="outline" size="sm">
-            <RefreshCw className="h-4 w-4 mr-2" />
-            Sync IBKR
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleSync}
+            disabled={isSyncing || !ibkrStatus.connected}
+          >
+            {isSyncing ? (
+              <>
+                <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                Syncing...
+              </>
+            ) : (
+              <>
+                <RefreshCw className="h-4 w-4 mr-2" />
+                Sync IBKR
+              </>
+            )}
           </Button>
           <Button size="sm">
             <Plus className="h-4 w-4 mr-2" />
@@ -128,6 +155,20 @@ export default function PositionsPage() {
           </Button>
         </div>
       </div>
+
+      {/* Connection Status */}
+      {!ibkrStatus.connected && (
+        <div className="bg-yellow-500/10 border border-yellow-500/50 text-yellow-600 px-4 py-3 rounded-lg">
+          IBKR not connected. Go to Settings to connect for live sync.
+        </div>
+      )}
+
+      {/* Error Message */}
+      {error && (
+        <div className="bg-red-500/10 border border-red-500/50 text-red-500 px-4 py-3 rounded-lg">
+          {error}
+        </div>
+      )}
 
       {/* Tabs */}
       <Tabs defaultValue="options" className="space-y-4">
@@ -176,32 +217,40 @@ export default function PositionsPage() {
                     <TableHead>DTE</TableHead>
                     <TableHead>Qty</TableHead>
                     <TableHead>Premium</TableHead>
-                    <TableHead>P&L</TableHead>
+                    <TableHead>Strategy</TableHead>
                     <TableHead>Actions</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {positions.map((position) => (
-                    <TableRow key={position.id}>
-                      <TableCell className="font-semibold">{position.underlying}</TableCell>
-                      <TableCell>
-                        <Badge variant={position.optionType === 'CALL' ? 'default' : 'secondary'}>
-                          {position.optionType}
-                        </Badge>
-                      </TableCell>
-                      <TableCell>${position.strike}</TableCell>
-                      <TableCell>{position.expiration}</TableCell>
-                      <TableCell>{position.daysToExpiry !== undefined && getDteBadge(position.daysToExpiry)}</TableCell>
-                      <TableCell>{position.quantity}</TableCell>
-                      <TableCell>{formatCurrency(position.premiumCollected)}</TableCell>
-                      <TableCell>
-                        <PnlCell value={position.pnl} percent={position.pnlPercent} />
-                      </TableCell>
-                      <TableCell>
-                        <Button variant="ghost" size="sm">Manage</Button>
+                  {filteredPositions.length > 0 ? (
+                    filteredPositions.map((position) => (
+                      <TableRow key={position.id}>
+                        <TableCell className="font-semibold">{position.underlying}</TableCell>
+                        <TableCell>
+                          <Badge variant={position.option_type === 'CALL' ? 'default' : 'secondary'}>
+                            {position.option_type}
+                          </Badge>
+                        </TableCell>
+                        <TableCell>${position.strike}</TableCell>
+                        <TableCell>{position.expiry}</TableCell>
+                        <TableCell>{getDteBadge(position.days_to_expiry)}</TableCell>
+                        <TableCell>{position.quantity}</TableCell>
+                        <TableCell>{formatCurrency(position.premium_collected * position.quantity * 100)}</TableCell>
+                        <TableCell>
+                          <Badge variant="outline">{position.strategy_type}</Badge>
+                        </TableCell>
+                        <TableCell>
+                          <Button variant="ghost" size="sm">Manage</Button>
+                        </TableCell>
+                      </TableRow>
+                    ))
+                  ) : (
+                    <TableRow>
+                      <TableCell colSpan={9} className="text-center py-8 text-muted-foreground">
+                        No open positions. Add a position or sync from IBKR.
                       </TableCell>
                     </TableRow>
-                  ))}
+                  )}
                 </TableBody>
               </Table>
             </CardContent>
@@ -210,6 +259,58 @@ export default function PositionsPage() {
 
         {/* Stocks Tab */}
         <TabsContent value="stocks" className="space-y-4">
+          {/* Portfolio Summary */}
+          {stockHoldings.length > 0 && (
+            <div className="grid gap-4 md:grid-cols-4">
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardDescription>Total Market Value</CardDescription>
+                  <CardTitle className="text-2xl">
+                    {stockHoldings.some(h => h.market_value)
+                      ? formatCurrency(stockHoldings.reduce((sum, h) => sum + (h.market_value || 0), 0))
+                      : <span className="text-muted-foreground text-base">Sync for live data</span>
+                    }
+                  </CardTitle>
+                </CardHeader>
+              </Card>
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardDescription>Total Cost Basis</CardDescription>
+                  <CardTitle className="text-2xl">
+                    {stockHoldings.some(h => h.avg_cost)
+                      ? formatCurrency(stockHoldings.reduce((sum, h) => sum + (h.avg_cost || 0) * h.quantity, 0))
+                      : <span className="text-muted-foreground text-base">-</span>
+                    }
+                  </CardTitle>
+                </CardHeader>
+              </Card>
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardDescription>Unrealized P&L</CardDescription>
+                  <CardTitle className={cn(
+                    "text-2xl",
+                    stockHoldings.reduce((sum, h) => sum + (h.unrealized_pnl || 0), 0) >= 0
+                      ? "text-green-500"
+                      : "text-red-500"
+                  )}>
+                    {stockHoldings.some(h => h.unrealized_pnl !== null && h.unrealized_pnl !== undefined)
+                      ? formatCurrency(stockHoldings.reduce((sum, h) => sum + (h.unrealized_pnl || 0), 0))
+                      : <span className="text-muted-foreground text-base">Sync for live data</span>
+                    }
+                  </CardTitle>
+                </CardHeader>
+              </Card>
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardDescription>Available CC Lots</CardDescription>
+                  <CardTitle className="text-2xl text-green-500">
+                    {stockHoldings.reduce((sum, h) => sum + Math.floor(h.quantity / 100), 0)} lots
+                  </CardTitle>
+                </CardHeader>
+              </Card>
+            </div>
+          )}
+
           <Card>
             <CardHeader>
               <CardTitle>Stock Holdings</CardTitle>
@@ -229,27 +330,39 @@ export default function PositionsPage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {stockHoldings.map((holding) => (
-                    <TableRow key={holding.id}>
-                      <TableCell className="font-semibold">{holding.symbol}</TableCell>
-                      <TableCell>{holding.quantity}</TableCell>
-                      <TableCell>{formatCurrency(holding.avgCost)}</TableCell>
-                      <TableCell>{formatCurrency(holding.currentPrice)}</TableCell>
-                      <TableCell>{formatCurrency(holding.marketValue)}</TableCell>
-                      <TableCell>
-                        <PnlCell value={holding.pnl} percent={holding.pnlPercent} />
-                      </TableCell>
-                      <TableCell>
-                        {Math.floor(holding.quantity / 100) > 0 ? (
-                          <Badge className="bg-green-500 hover:bg-green-600">
-                            {Math.floor(holding.quantity / 100)} lots
-                          </Badge>
-                        ) : (
-                          <span className="text-muted-foreground">-</span>
-                        )}
+                  {stockHoldings.length > 0 ? (
+                    stockHoldings.map((holding) => (
+                      <TableRow key={holding.id}>
+                        <TableCell className="font-semibold">{holding.symbol}</TableCell>
+                        <TableCell>{holding.quantity}</TableCell>
+                        <TableCell>{holding.avg_cost ? formatCurrency(holding.avg_cost) : '-'}</TableCell>
+                        <TableCell>{holding.current_price ? formatCurrency(holding.current_price) : '-'}</TableCell>
+                        <TableCell>{holding.market_value ? formatCurrency(holding.market_value) : '-'}</TableCell>
+                        <TableCell>
+                          {holding.unrealized_pnl !== undefined ? (
+                            <PnlCell value={holding.unrealized_pnl} />
+                          ) : (
+                            '-'
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          {Math.floor(holding.quantity / 100) > 0 ? (
+                            <Badge className="bg-green-500 hover:bg-green-600">
+                              {Math.floor(holding.quantity / 100)} lots
+                            </Badge>
+                          ) : (
+                            <span className="text-muted-foreground">-</span>
+                          )}
+                        </TableCell>
+                      </TableRow>
+                    ))
+                  ) : (
+                    <TableRow>
+                      <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">
+                        No stock holdings. Sync from IBKR to import your positions.
                       </TableCell>
                     </TableRow>
-                  ))}
+                  )}
                 </TableBody>
               </Table>
             </CardContent>
@@ -273,29 +386,40 @@ export default function PositionsPage() {
                     <TableHead>Open Date</TableHead>
                     <TableHead>Close Date</TableHead>
                     <TableHead>Premium</TableHead>
-                    <TableHead>Close</TableHead>
+                    <TableHead>Close Price</TableHead>
                     <TableHead>P&L</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {closedPositions.map((position) => (
-                    <TableRow key={position.id}>
-                      <TableCell className="font-semibold">{position.underlying}</TableCell>
-                      <TableCell>
-                        <Badge variant={position.optionType === 'CALL' ? 'default' : 'secondary'}>
-                          {position.optionType}
-                        </Badge>
-                      </TableCell>
-                      <TableCell>${position.strike}</TableCell>
-                      <TableCell>{position.openDate}</TableCell>
-                      <TableCell>{position.closeDate}</TableCell>
-                      <TableCell>{formatCurrency(position.premiumCollected)}</TableCell>
-                      <TableCell>{position.closePremium !== undefined && formatCurrency(position.closePremium)}</TableCell>
-                      <TableCell>
-                        <PnlCell value={position.pnl} percent={position.pnlPercent} />
+                  {closedPositions.length > 0 ? (
+                    closedPositions.map((position) => {
+                      const pnl = (position.premium_collected - (position.close_price || 0)) * position.quantity * 100;
+                      return (
+                        <TableRow key={position.id}>
+                          <TableCell className="font-semibold">{position.underlying}</TableCell>
+                          <TableCell>
+                            <Badge variant={position.option_type === 'CALL' ? 'default' : 'secondary'}>
+                              {position.option_type}
+                            </Badge>
+                          </TableCell>
+                          <TableCell>${position.strike}</TableCell>
+                          <TableCell>{position.open_date}</TableCell>
+                          <TableCell>{position.close_date}</TableCell>
+                          <TableCell>{formatCurrency(position.premium_collected * position.quantity * 100)}</TableCell>
+                          <TableCell>{position.close_price !== undefined ? formatCurrency(position.close_price * position.quantity * 100) : '-'}</TableCell>
+                          <TableCell>
+                            <PnlCell value={pnl} />
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })
+                  ) : (
+                    <TableRow>
+                      <TableCell colSpan={8} className="text-center py-8 text-muted-foreground">
+                        No closed positions yet.
                       </TableCell>
                     </TableRow>
-                  ))}
+                  )}
                 </TableBody>
               </Table>
             </CardContent>

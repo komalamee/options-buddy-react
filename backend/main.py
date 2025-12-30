@@ -46,7 +46,12 @@ app = FastAPI(
 # Configure CORS for React frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:3001",
+        "http://127.0.0.1:3001",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -147,6 +152,7 @@ You have real-time access to the user's:
 - **Stock holdings** with share counts and cost basis
 - **Performance stats** (win rate, total P&L, trade history)
 - **Covered call lots available** (shares ÷ 100)
+- **Scanner results** with BS model pricing, IV/HV ratios, and Greeks
 
 ## Premium Selling Strategies
 Focus on these strategies based on user's situation:
@@ -165,11 +171,30 @@ Focus on these strategies based on user's situation:
    - Perfect for users wanting to accumulate specific stocks
    - Track cost basis reduction from premiums collected
 
+## Black-Scholes Model Analysis
+The scanner uses Black-Scholes to calculate theoretical option prices. Use this to identify mispriced options:
+
+**Interpreting BS vs Market Price:**
+- **Overpriced (SELL opportunity)**: Market price > BS theoretical by 10%+ — ideal for premium sellers
+- **Fairly priced**: Market price within ±10% of BS price — acceptable but no edge
+- **Underpriced (AVOID selling)**: Market price < BS theoretical — poor risk/reward for sellers
+
+**Why options become overpriced:**
+- IV spike (earnings, news, market fear) inflates premiums temporarily
+- IV > HV means the market expects MORE volatility than historically occurs
+- After IV crush (post-earnings), prices revert toward BS theoretical
+
+**When recommending trades, always mention:**
+- Whether the option appears overpriced vs BS model
+- The IV/HV ratio and what it implies
+- Expected IV crush opportunities (e.g., post-earnings)
+
 ## Finding Arbitrage/Mispricing Opportunities
 The app's core value is identifying overpriced options using:
-- **IV/HV Ratio > 1.2**: Implied volatility exceeds historical (option is expensive)
-- **Model vs Market Price**: Black-Scholes theoretical price vs actual market price
-- When IV > HV, premium sellers have an edge
+- **IV/HV Ratio > 1.2**: Implied volatility exceeds historical — option is expensive, edge for sellers
+- **IV/HV Ratio 1.0-1.2**: Fairly priced — no significant edge
+- **IV/HV Ratio < 1.0**: Underpriced — avoid selling, poor premium for risk taken
+- **BS Price Gap**: Market price significantly above theoretical = selling opportunity
 
 ## Goal-Aware Recommendations
 Always consider the user's long-term goals when advising:
@@ -181,7 +206,7 @@ Always consider the user's long-term goals when advising:
 ## Response Guidelines
 - Always reference their ACTUAL positions and holdings from the portfolio context
 - Give SPECIFIC strikes, expirations, and premium estimates
-- Explain WHY an option is attractive (IV/HV ratio, probability of profit)
+- Explain WHY an option is attractive (IV/HV ratio, BS mispricing, probability of profit)
 - Calculate premium as % of collateral (annualized yield)
 - Warn about assignment risk, earnings dates, ex-dividend dates
 - Suggest position sizes based on their holdings and risk tolerance
@@ -191,6 +216,7 @@ Always consider the user's long-term goals when advising:
 - **DTE (Days to Expiry)**: 30-45 DTE is optimal for theta decay
 - **Delta**: Probability proxy (0.30 delta ≈ 70% profit probability for sellers)
 - **IV/HV Ratio**: >1.2 means option is overpriced (edge for sellers)
+- **BS Price vs Market**: >10% gap = mispricing opportunity
 
 ## Format
 - Use **bold** for key numbers and terms
@@ -367,31 +393,102 @@ def sync_from_ibkr(account: Optional[str] = None):
     if not ibkr.is_connected:
         raise HTTPException(status_code=400, detail="Not connected to IBKR")
 
+    # If no account specified, check for saved preference
+    if not account:
+        saved_account = get_setting("selected_ibkr_account")
+        if saved_account:
+            account = saved_account
+            logger.info(f"Using saved account preference: {account}")
+
+    # If still no account, use first available account
+    status = ibkr.get_status()
+    if not account and status.accounts:
+        account = status.accounts[0]
+        logger.info(f"No account specified, using default: {account}")
+
     positions = ibkr.get_positions(account)
 
     synced_stocks = 0
     synced_options = 0
 
-    for pos in positions:
-        if pos['sec_type'] == 'STK':
-            # Sync stock holding
-            upsert_stock_holding(
-                symbol=pos['symbol'],
-                quantity=int(pos['quantity']),
-                avg_cost=pos['avg_cost'] / pos['quantity'] if pos['quantity'] else None,
-                ibkr_con_id=pos['con_id']
-            )
-            synced_stocks += 1
-        elif pos['sec_type'] == 'OPT':
-            # Options are tracked manually in positions table
-            # We don't auto-create them, just log what we found
-            synced_options += 1
-            logger.info(f"Found option: {pos['symbol']} {pos.get('strike')} {pos.get('right')} {pos.get('expiry')}")
+    # Separate stocks and options
+    stock_positions = [p for p in positions if p['sec_type'] == 'STK']
+    option_positions = [p for p in positions if p['sec_type'] == 'OPT']
+
+    # IMPORTANT: Sync stocks FIRST so covered call detection works correctly
+    for pos in stock_positions:
+        # IBKR avg_cost is already per-share cost - DO NOT divide by quantity
+        # The avg_cost from IBKR is the per-share average cost basis
+        avg_cost_per_share = pos['avg_cost']
+
+        # Try to get current price from IBKR
+        current_price = ibkr.get_stock_price(pos['symbol'])
+
+        upsert_stock_holding(
+            symbol=pos['symbol'],
+            quantity=int(pos['quantity']),
+            avg_cost=avg_cost_per_share,
+            current_price=current_price,
+            ibkr_con_id=pos['con_id']
+        )
+        synced_stocks += 1
+        logger.info(f"Synced stock: {pos['symbol']} qty={pos['quantity']} avg_cost=${avg_cost_per_share:.2f} current=${current_price or 'N/A'}")
+
+    # NOW sync options - holdings are already in database for CC detection
+    for pos in option_positions:
+        # Sync option position to database
+        expiry = pos.get('expiry', '')
+        # Convert IBKR format (YYYYMMDD) to database format (YYYY-MM-DD)
+        if len(expiry) == 8:
+            expiry = f"{expiry[:4]}-{expiry[4:6]}-{expiry[6:8]}"
+
+        right = pos.get('right', '')
+        option_type = 'CALL' if right == 'C' else 'PUT' if right == 'P' else right
+
+        # Determine strategy type based on holdings (now correctly populated)
+        strategy_type = 'CSP'  # Default for puts
+        if option_type == 'CALL':
+            # Check if user has shares for covered call
+            holdings = get_stock_holdings()
+            shares_needed = abs(int(pos['quantity'])) * 100
+            for h in holdings:
+                if h['symbol'] == pos['symbol'] and h['quantity'] >= shares_needed:
+                    strategy_type = 'CC'
+                    logger.info(f"Detected covered call: {pos['symbol']} has {h['quantity']} shares, needs {shares_needed}")
+                    break
+            else:
+                strategy_type = 'NAKED'
+                logger.warning(f"Naked call detected: {pos['symbol']} - no sufficient holdings found")
+        elif option_type == 'PUT':
+            # Could check for cash-secured vs naked put here if needed
+            strategy_type = 'CSP'
+
+        # Calculate premium per share from avg_cost
+        # IBKR avg_cost for options is the total cost (negative for short positions)
+        avg_cost = pos.get('avg_cost', 0)
+        multiplier = int(pos.get('multiplier', '100'))
+        premium_per_share = abs(avg_cost) / multiplier if avg_cost else 0
+
+        # Create position if it doesn't exist (check by conId)
+        position_id = create_position(
+            underlying=pos['symbol'],
+            option_type=option_type,
+            strike=pos.get('strike', 0),
+            expiry=expiry,
+            quantity=abs(int(pos['quantity'])),
+            premium_collected=premium_per_share,
+            strategy_type=strategy_type,
+            ibkr_con_id=pos['con_id']
+        )
+
+        synced_options += 1
+        logger.info(f"Synced option: {pos['symbol']} ${pos.get('strike')} {option_type} exp {expiry} strategy={strategy_type} (ID: {position_id})")
 
     return {
         "message": "Sync completed",
         "stocks_synced": synced_stocks,
-        "options_found": synced_options
+        "options_synced": synced_options,
+        "account_used": account
     }
 
 
@@ -712,19 +809,6 @@ def get_settings():
     return {"settings": masked}
 
 
-@app.get("/api/settings/{key}")
-def get_setting_value(key: str):
-    """Get a specific setting."""
-    value = get_setting(key)
-    if value is None:
-        return {"key": key, "value": None}
-    # Mask API keys
-    if 'api_key' in key.lower() and value:
-        masked = f"****{value[-4:]}" if len(value) > 4 else "****"
-        return {"key": key, "value": masked, "is_set": True}
-    return {"key": key, "value": value}
-
-
 @app.post("/api/settings")
 def update_setting(setting: SettingUpdate):
     """Update a single setting."""
@@ -732,18 +816,7 @@ def update_setting(setting: SettingUpdate):
     return {"success": True, "key": setting.key}
 
 
-@app.post("/api/settings/ai")
-def update_ai_settings(ai_settings: AISettingsUpdate):
-    """Update AI provider and API key."""
-    set_setting("ai_provider", ai_settings.provider)
-    set_setting(f"{ai_settings.provider}_api_key", ai_settings.api_key)
-    return {
-        "success": True,
-        "provider": ai_settings.provider,
-        "api_key_set": True
-    }
-
-
+# AI settings routes MUST come before the {key} route to avoid path conflicts
 @app.get("/api/settings/ai")
 def get_ai_settings():
     """Get current AI settings."""
@@ -760,6 +833,18 @@ def get_ai_settings():
         "provider": provider,
         "api_key_set": keys_status.get(provider, False),
         "available_providers": keys_status
+    }
+
+
+@app.post("/api/settings/ai")
+def update_ai_settings(ai_settings: AISettingsUpdate):
+    """Update AI provider and API key."""
+    set_setting("ai_provider", ai_settings.provider)
+    set_setting(f"{ai_settings.provider}_api_key", ai_settings.api_key)
+    return {
+        "success": True,
+        "provider": ai_settings.provider,
+        "api_key_set": True
     }
 
 
@@ -783,6 +868,20 @@ def test_ai_connection():
         "provider": provider,
         "message": f"API key for {provider} is configured"
     }
+
+
+# Generic key route MUST come after specific routes like /api/settings/ai
+@app.get("/api/settings/{key}")
+def get_setting_value(key: str):
+    """Get a specific setting."""
+    value = get_setting(key)
+    if value is None:
+        return {"key": key, "value": None}
+    # Mask API keys
+    if 'api_key' in key.lower() and value:
+        masked = f"****{value[-4:]}" if len(value) > 4 else "****"
+        return {"key": key, "value": masked, "is_set": True}
+    return {"key": key, "value": value}
 
 
 # ==================== AI CHAT ====================
@@ -966,5 +1065,6 @@ if __name__ == "__main__":
         "main:app",
         host=settings.api_host,
         port=settings.api_port,
-        reload=True
+        reload=True,
+        loop="asyncio"  # Required for ib_insync compatibility (uvloop conflicts with nest_asyncio)
     )

@@ -123,3 +123,44 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* Ticker animation for alerts */
+@keyframes ticker {
+  0% {
+    transform: translateX(0);
+  }
+  100% {
+    transform: translateX(-33.33%);
+  }
+}
+
+.animate-ticker {
+  animation: ticker 30s linear infinite;
+}
+
+.animate-ticker:hover {
+  animation-play-state: paused;
+}
+
+/* Options Chain Highlights */
+.options-chain-itm {
+  @apply bg-muted/70;
+}
+
+.options-chain-otm {
+  @apply bg-background;
+}
+
+.options-chain-atm {
+  @apply bg-primary/5 border-y border-primary/20;
+}
+
+/* Perfect Match Glow Animation */
+@keyframes subtle-glow {
+  0%, 100% { box-shadow: 0 0 10px rgba(251, 191, 36, 0.2); }
+  50% { box-shadow: 0 0 15px rgba(251, 191, 36, 0.35); }
+}
+
+.perfect-match-glow {
+  animation: subtle-glow 2s ease-in-out infinite;
+}

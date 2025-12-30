@@ -1,5 +1,6 @@
 'use client';
 
+import { useEffect } from 'react';
 import {
   Card,
   CardContent,
@@ -16,38 +17,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { TrendingUp, TrendingDown, Trophy, Target, BarChart3, Calendar } from 'lucide-react';
+import { TrendingUp, TrendingDown, Trophy, Target, BarChart3, Calendar, RefreshCw } from 'lucide-react';
 import { cn } from '@/lib/utils';
-
-// Demo performance data
-const performanceStats = {
-  totalPnl: 2730.27,
-  realizedPnl: 270,
-  unrealizedPnl: 2460.27,
-  winRate: 100,
-  totalTrades: 1,
-  avgWin: 270,
-  avgLoss: 0,
-  bestTrade: { symbol: 'AAPL', pnl: 270 },
-  worstTrade: null,
-  profitFactor: Infinity,
-};
-
-const monthlyData = [
-  { month: 'Jul 2024', trades: 0, pnl: 0, winRate: 0 },
-  { month: 'Aug 2024', trades: 0, pnl: 0, winRate: 0 },
-  { month: 'Sep 2024', trades: 0, pnl: 0, winRate: 0 },
-  { month: 'Oct 2024', trades: 0, pnl: 0, winRate: 0 },
-  { month: 'Nov 2024', trades: 1, pnl: 270, winRate: 100 },
-  { month: 'Dec 2024', trades: 0, pnl: 0, winRate: 0 },
-];
-
-const strategyBreakdown = [
-  { strategy: 'Cash Secured Puts', trades: 1, pnl: 270, winRate: 100 },
-  { strategy: 'Covered Calls', trades: 0, pnl: 0, winRate: 0 },
-  { strategy: 'Iron Condors', trades: 0, pnl: 0, winRate: 0 },
-  { strategy: 'Put Spreads', trades: 0, pnl: 0, winRate: 0 },
-];
+import { usePortfolioStore } from '@/stores/portfolio-store';
 
 function formatCurrency(value: number) {
   const formatted = new Intl.NumberFormat('en-US', {
@@ -68,7 +40,7 @@ function StatCard({
   title: string;
   value: string;
   subtitle?: string;
-  icon: any;
+  icon: React.ElementType;
   valueColor?: 'green' | 'red' | 'default';
 }) {
   return (
@@ -100,6 +72,36 @@ function StatCard({
 }
 
 export default function PerformancePage() {
+  const { performance, summary, fetchPerformance, isLoading } = usePortfolioStore();
+
+  useEffect(() => {
+    fetchPerformance();
+  }, [fetchPerformance]);
+
+  // Use performance data from store, with fallbacks
+  const stats = {
+    totalPnl: (performance?.total_realized_pnl || 0) + (summary.unrealizedPnl || 0),
+    realizedPnl: performance?.total_realized_pnl || summary.realizedPnl || 0,
+    unrealizedPnl: summary.unrealizedPnl || 0,
+    winRate: performance?.win_rate || summary.winRate || 0,
+    totalTrades: performance?.total_trades || summary.totalTrades || 0,
+    avgWin: performance?.avg_win || 0,
+    avgLoss: performance?.avg_loss || 0,
+    bestTrade: performance?.best_trade || null,
+    worstTrade: performance?.worst_trade || null,
+    profitFactor: performance?.profit_factor || 0,
+    winningTrades: performance?.winning_trades || 0,
+    losingTrades: performance?.losing_trades || 0,
+  };
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center h-[60vh]">
+        <RefreshCw className="h-8 w-8 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
       {/* Page Header */}
@@ -128,28 +130,28 @@ export default function PerformancePage() {
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
         <StatCard
           title="Total P&L"
-          value={formatCurrency(performanceStats.totalPnl)}
+          value={formatCurrency(stats.totalPnl)}
           subtitle="Realized + Unrealized"
           icon={TrendingUp}
-          valueColor={performanceStats.totalPnl >= 0 ? 'green' : 'red'}
+          valueColor={stats.totalPnl >= 0 ? 'green' : 'red'}
         />
         <StatCard
           title="Realized P&L"
-          value={formatCurrency(performanceStats.realizedPnl)}
+          value={formatCurrency(stats.realizedPnl)}
           subtitle="From closed trades"
           icon={Target}
-          valueColor={performanceStats.realizedPnl >= 0 ? 'green' : 'red'}
+          valueColor={stats.realizedPnl >= 0 ? 'green' : 'red'}
         />
         <StatCard
           title="Win Rate"
-          value={`${performanceStats.winRate}%`}
-          subtitle={`${performanceStats.totalTrades} total trades`}
+          value={`${stats.winRate.toFixed(1)}%`}
+          subtitle={`${stats.totalTrades} total trades`}
           icon={Trophy}
         />
         <StatCard
           title="Total Trades"
-          value={performanceStats.totalTrades.toString()}
-          subtitle="All time"
+          value={stats.totalTrades.toString()}
+          subtitle={`${stats.winningTrades}W / ${stats.losingTrades}L`}
           icon={BarChart3}
         />
       </div>
@@ -174,33 +176,37 @@ export default function PerformancePage() {
                 <div className="flex justify-between items-center py-2 border-b">
                   <span className="text-muted-foreground">Average Win</span>
                   <span className="font-medium text-green-500">
-                    {formatCurrency(performanceStats.avgWin)}
+                    {stats.avgWin > 0 ? formatCurrency(stats.avgWin) : '-'}
                   </span>
                 </div>
                 <div className="flex justify-between items-center py-2 border-b">
                   <span className="text-muted-foreground">Average Loss</span>
                   <span className="font-medium text-red-500">
-                    {performanceStats.avgLoss === 0 ? '$0.00' : formatCurrency(-performanceStats.avgLoss)}
+                    {stats.avgLoss > 0 ? formatCurrency(-stats.avgLoss) : '-'}
                   </span>
                 </div>
                 <div className="flex justify-between items-center py-2 border-b">
                   <span className="text-muted-foreground">Best Trade</span>
-                  <span className="font-medium">
-                    {performanceStats.bestTrade
-                      ? `${performanceStats.bestTrade.symbol} (${formatCurrency(performanceStats.bestTrade.pnl)})`
+                  <span className="font-medium text-green-500">
+                    {stats.bestTrade
+                      ? `${stats.bestTrade.symbol} (${formatCurrency(stats.bestTrade.pnl)})`
                       : '-'}
                   </span>
                 </div>
                 <div className="flex justify-between items-center py-2 border-b">
                   <span className="text-muted-foreground">Worst Trade</span>
-                  <span className="font-medium">
-                    {performanceStats.worstTrade ? '-' : 'N/A'}
+                  <span className="font-medium text-red-500">
+                    {stats.worstTrade
+                      ? `${stats.worstTrade.symbol} (${formatCurrency(stats.worstTrade.pnl)})`
+                      : '-'}
                   </span>
                 </div>
                 <div className="flex justify-between items-center py-2">
                   <span className="text-muted-foreground">Profit Factor</span>
                   <span className="font-medium">
-                    {performanceStats.profitFactor === Infinity ? '∞' : performanceStats.profitFactor.toFixed(2)}
+                    {stats.profitFactor === Infinity || stats.profitFactor === 0
+                      ? '-'
+                      : stats.profitFactor.toFixed(2)}
                   </span>
                 </div>
               </CardContent>
@@ -220,7 +226,7 @@ export default function PerformancePage() {
                       Chart visualization coming soon
                     </p>
                     <p className="text-xs text-muted-foreground mt-1">
-                      Requires more trade history
+                      {stats.totalTrades === 0 ? 'No trade history yet' : 'Requires more trade history'}
                     </p>
                   </div>
                 </div>
@@ -237,40 +243,23 @@ export default function PerformancePage() {
               <CardDescription>Performance by month</CardDescription>
             </CardHeader>
             <CardContent>
-              <div className="space-y-4">
-                {monthlyData.map((month) => (
-                  <div
-                    key={month.month}
-                    className="flex items-center justify-between py-3 border-b last:border-0"
-                  >
-                    <div className="flex items-center gap-4">
-                      <Calendar className="h-5 w-5 text-muted-foreground" />
-                      <div>
-                        <p className="font-medium">{month.month}</p>
-                        <p className="text-sm text-muted-foreground">
-                          {month.trades} trades
-                        </p>
-                      </div>
-                    </div>
-                    <div className="text-right">
-                      <p
-                        className={cn(
-                          'font-medium',
-                          month.pnl > 0 && 'text-green-500',
-                          month.pnl < 0 && 'text-red-500'
-                        )}
-                      >
-                        {month.pnl === 0 ? '-' : formatCurrency(month.pnl)}
-                      </p>
-                      {month.trades > 0 && (
-                        <p className="text-sm text-muted-foreground">
-                          {month.winRate}% win rate
-                        </p>
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </div>
+              {stats.totalTrades === 0 ? (
+                <div className="text-center py-8">
+                  <Calendar className="h-12 w-12 text-muted-foreground mx-auto mb-2" />
+                  <p className="text-muted-foreground">No trade history yet</p>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    Complete some trades to see monthly breakdown
+                  </p>
+                </div>
+              ) : (
+                <div className="text-center py-8">
+                  <Calendar className="h-12 w-12 text-muted-foreground mx-auto mb-2" />
+                  <p className="text-muted-foreground">Monthly breakdown coming soon</p>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    This feature is being developed
+                  </p>
+                </div>
+              )}
             </CardContent>
           </Card>
         </TabsContent>
@@ -283,35 +272,23 @@ export default function PerformancePage() {
               <CardDescription>Results by strategy type</CardDescription>
             </CardHeader>
             <CardContent>
-              <div className="space-y-4">
-                {strategyBreakdown.map((strategy) => (
-                  <div
-                    key={strategy.strategy}
-                    className="flex items-center justify-between py-3 border-b last:border-0"
-                  >
-                    <div>
-                      <p className="font-medium">{strategy.strategy}</p>
-                      <p className="text-sm text-muted-foreground">
-                        {strategy.trades} trades
-                      </p>
-                    </div>
-                    <div className="text-right">
-                      <p
-                        className={cn(
-                          'font-medium',
-                          strategy.pnl > 0 && 'text-green-500',
-                          strategy.pnl < 0 && 'text-red-500'
-                        )}
-                      >
-                        {strategy.pnl === 0 ? '-' : formatCurrency(strategy.pnl)}
-                      </p>
-                      {strategy.trades > 0 && (
-                        <Badge variant="outline">{strategy.winRate}% win</Badge>
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </div>
+              {stats.totalTrades === 0 ? (
+                <div className="text-center py-8">
+                  <Target className="h-12 w-12 text-muted-foreground mx-auto mb-2" />
+                  <p className="text-muted-foreground">No trade history yet</p>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    Complete some trades to see strategy breakdown
+                  </p>
+                </div>
+              ) : (
+                <div className="text-center py-8">
+                  <Target className="h-12 w-12 text-muted-foreground mx-auto mb-2" />
+                  <p className="text-muted-foreground">Strategy breakdown coming soon</p>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    This feature is being developed
+                  </p>
+                </div>
+              )}
             </CardContent>
           </Card>
         </TabsContent>

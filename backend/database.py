@@ -165,9 +165,28 @@ def create_position(
     notes: Optional[str] = None,
     ibkr_con_id: Optional[int] = None
 ) -> int:
-    """Create a new position."""
+    """Create a new position or update existing one if ibkr_con_id matches."""
     with get_db_connection() as conn:
         cursor = conn.cursor()
+
+        # If we have an IBKR con_id, check if position already exists
+        if ibkr_con_id:
+            cursor.execute(
+                'SELECT id FROM positions WHERE ibkr_con_id = ? AND status = ?',
+                (ibkr_con_id, 'OPEN')
+            )
+            existing = cursor.fetchone()
+            if existing:
+                # Update existing position
+                cursor.execute('''
+                    UPDATE positions SET
+                        quantity = ?, premium_collected = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                ''', (quantity, premium_collected, existing['id']))
+                conn.commit()
+                return existing['id']
+
+        # Create new position
         cursor.execute('''
             INSERT INTO positions (
                 underlying, option_type, strike, expiry, quantity,
