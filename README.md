@@ -59,6 +59,19 @@ cp backend/.env.example backend/.env
 
 ### Running the App
 
+#### Option 1: One-Click Launch (Recommended)
+
+Double-click **`Start Options Buddy.command`** in the project folder (or on your Desktop if you created a shortcut).
+
+This will:
+- Start the backend server
+- Start the frontend server
+- Open the app in your browser
+
+Press `Ctrl+C` in the Terminal window to stop.
+
+#### Option 2: Manual Start (Two Terminals)
+
 **Terminal 1 - Backend:**
 ```bash
 cd backend

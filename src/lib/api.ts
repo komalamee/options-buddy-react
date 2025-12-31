@@ -258,6 +258,20 @@ class ApiClient {
     });
   }
 
+  // ==================== Market Status ====================
+
+  async getMarketStatus(): Promise<{
+    is_open: boolean;
+    status: 'open' | 'closed' | 'pre_market' | 'after_hours';
+    reason: string;
+    message: string;
+    current_time_et: string;
+    next_open?: string;
+    closes_at?: string;
+  }> {
+    return this.request('/api/market/status');
+  }
+
   // ==================== Market Data ====================
 
   async getStockPrice(symbol: string): Promise<{ symbol: string; price: number }> {

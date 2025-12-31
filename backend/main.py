@@ -4,7 +4,8 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, List
-from datetime import datetime, date
+from datetime import datetime, date, time
+import pytz
 import logging
 import httpx
 import json
@@ -557,6 +558,68 @@ def delete_watchlist_symbol(watchlist_id: int, symbol: str):
     if not success:
         raise HTTPException(status_code=404, detail="Symbol not found in watchlist")
     return {"message": "Symbol removed"}
+
+
+# ==================== MARKET STATUS ====================
+
+def get_market_status() -> dict:
+    """
+    Check if the US stock market is currently open.
+    NYSE/NASDAQ hours: 9:30 AM - 4:00 PM ET, Monday-Friday
+    Does not account for market holidays.
+    """
+    eastern = pytz.timezone('America/New_York')
+    now = datetime.now(eastern)
+
+    # Check if it's a weekend (Saturday=5, Sunday=6)
+    if now.weekday() >= 5:
+        return {
+            "is_open": False,
+            "status": "closed",
+            "reason": "weekend",
+            "message": "Market is closed (Weekend)",
+            "current_time_et": now.strftime("%Y-%m-%d %H:%M:%S ET"),
+            "next_open": "Monday 9:30 AM ET"
+        }
+
+    market_open = time(9, 30)
+    market_close = time(16, 0)
+    current_time = now.time()
+
+    if current_time < market_open:
+        return {
+            "is_open": False,
+            "status": "pre_market",
+            "reason": "before_hours",
+            "message": "Market is closed (Pre-Market)",
+            "current_time_et": now.strftime("%Y-%m-%d %H:%M:%S ET"),
+            "next_open": "Today 9:30 AM ET"
+        }
+    elif current_time > market_close:
+        next_open = "Tomorrow 9:30 AM ET" if now.weekday() < 4 else "Monday 9:30 AM ET"
+        return {
+            "is_open": False,
+            "status": "after_hours",
+            "reason": "after_hours",
+            "message": "Market is closed (After-Hours)",
+            "current_time_et": now.strftime("%Y-%m-%d %H:%M:%S ET"),
+            "next_open": next_open
+        }
+    else:
+        return {
+            "is_open": True,
+            "status": "open",
+            "reason": "regular_hours",
+            "message": "Market is open",
+            "current_time_et": now.strftime("%Y-%m-%d %H:%M:%S ET"),
+            "closes_at": "Today 4:00 PM ET"
+        }
+
+
+@app.get("/api/market/status")
+def market_status():
+    """Get current market status (open/closed)."""
+    return get_market_status()
 
 
 # ==================== MARKET DATA ====================

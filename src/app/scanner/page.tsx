@@ -23,6 +23,7 @@ import { SymbolSearch } from '@/components/scanner/SymbolSearch';
 import { FilterBar } from '@/components/scanner/FilterBar';
 import { OptionsChain } from '@/components/scanner/OptionsChain';
 import { HighlightLegend } from '@/components/scanner/HighlightLegend';
+import { MarketStatusBanner } from '@/components/scanner/MarketStatusBanner';
 import {
   FilterConfig,
   FilterPreset,
@@ -316,6 +317,9 @@ export default function ScannerPage() {
           {ibkrStatus.connected ? 'IBKR Connected' : 'IBKR Disconnected'}
         </Badge>
       </div>
+
+      {/* Market Status Banner */}
+      <MarketStatusBanner />
 
       {/* Search & Filters Card */}
       <Card>
