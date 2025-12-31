@@ -330,26 +330,29 @@ class ApiClient {
 
   async getAISettings(): Promise<{
     provider: string;
+    model: string | null;
     api_key_set: boolean;
     available_providers: Record<string, boolean>;
   }> {
     return this.request('/api/settings/ai');
   }
 
-  async saveAISettings(provider: string, apiKey: string): Promise<{
+  async saveAISettings(provider: string, apiKey: string, model?: string): Promise<{
     success: boolean;
     provider: string;
+    model: string | null;
     api_key_set: boolean;
   }> {
     return this.request('/api/settings/ai', {
       method: 'POST',
-      body: JSON.stringify({ provider, api_key: apiKey }),
+      body: JSON.stringify({ provider, api_key: apiKey, model }),
     });
   }
 
   async testAIConnection(): Promise<{
     success: boolean;
     provider: string;
+    model: string;
     message: string;
   }> {
     return this.request('/api/settings/ai/test', { method: 'POST' });

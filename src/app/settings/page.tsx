@@ -38,6 +38,55 @@ import {
 import { cn } from '@/lib/utils';
 import { usePortfolioStore } from '@/stores/portfolio-store';
 import { api } from '@/lib/api';
+import { useTheme } from 'next-themes';
+
+// AI Provider and Model Configuration
+const AI_PROVIDERS = {
+  anthropic: {
+    name: 'Anthropic',
+    models: [
+      { id: 'claude-3-5-sonnet-20241022', name: 'Claude 3.5 Sonnet', tag: 'Recommended', description: 'Best balance of speed and intelligence' },
+      { id: 'claude-3-opus-20240229', name: 'Claude 3 Opus', tag: 'Best for Deep Analysis', description: 'Most capable for complex reasoning' },
+      { id: 'claude-3-5-haiku-20241022', name: 'Claude 3.5 Haiku', tag: 'Fastest', description: 'Quick responses, lower cost' },
+    ],
+  },
+  openai: {
+    name: 'OpenAI',
+    models: [
+      { id: 'gpt-4o', name: 'GPT-4o', tag: 'Recommended', description: 'Latest multimodal model' },
+      { id: 'o1-preview', name: 'o1-preview', tag: 'Best for Deep Analysis', description: 'Advanced reasoning for complex math' },
+      { id: 'o1-mini', name: 'o1-mini', tag: 'Best Value', description: 'Fast reasoning at lower cost' },
+      { id: 'gpt-4-turbo', name: 'GPT-4 Turbo', tag: '', description: '128K context window' },
+      { id: 'gpt-3.5-turbo', name: 'GPT-3.5 Turbo', tag: 'Cheapest', description: 'Budget-friendly option' },
+    ],
+  },
+  google: {
+    name: 'Google',
+    models: [
+      { id: 'gemini-2.0-flash-exp', name: 'Gemini 2.0 Flash', tag: 'Recommended', description: 'Latest and fastest Gemini' },
+      { id: 'gemini-1.5-pro', name: 'Gemini 1.5 Pro', tag: 'Best for Deep Analysis', description: '1M token context, complex reasoning' },
+      { id: 'gemini-1.5-flash', name: 'Gemini 1.5 Flash', tag: 'Best Value', description: 'Fast and cost-effective' },
+      { id: 'gemini-1.5-flash-8b', name: 'Gemini 1.5 Flash-8B', tag: 'Cheapest', description: 'Most affordable option' },
+    ],
+  },
+  xai: {
+    name: 'xAI',
+    models: [
+      { id: 'grok-2', name: 'Grok-2', tag: 'Recommended', description: 'Latest Grok model with real-time data' },
+      { id: 'grok-2-mini', name: 'Grok-2 Mini', tag: 'Cheapest', description: 'Faster, lighter version' },
+    ],
+  },
+  perplexity: {
+    name: 'Perplexity',
+    models: [
+      { id: 'llama-3.1-sonar-large-128k-online', name: 'Sonar Large Online', tag: 'Recommended', description: 'Best for research with live web search' },
+      { id: 'llama-3.1-sonar-small-128k-online', name: 'Sonar Small Online', tag: 'Cheapest', description: 'Faster searches at lower cost' },
+      { id: 'llama-3.1-sonar-huge-128k-online', name: 'Sonar Huge Online', tag: 'Best for Deep Analysis', description: 'Most capable with web search' },
+    ],
+  },
+} as const;
+
+type AIProviderKey = keyof typeof AI_PROVIDERS;
 
 export default function SettingsPage() {
   const {
@@ -50,11 +99,14 @@ export default function SettingsPage() {
     error,
   } = usePortfolioStore();
 
+  const { theme, setTheme } = useTheme();
+
   const [ibkrHost, setIbkrHost] = useState(ibkrStatus.host || '127.0.0.1');
   const [ibkrPort, setIbkrPort] = useState(String(ibkrStatus.port || 4001));
   const [selectedAccount, setSelectedAccount] = useState('');
   const [accountLoaded, setAccountLoaded] = useState(false);
-  const [aiProvider, setAiProvider] = useState('google');
+  const [aiProvider, setAiProvider] = useState<AIProviderKey>('google');
+  const [aiModel, setAiModel] = useState('gemini-2.0-flash-exp');
   const [apiKey, setApiKey] = useState('');
   const [syncMessage, setSyncMessage] = useState('');
   const [aiSaving, setAiSaving] = useState(false);
@@ -72,8 +124,16 @@ export default function SettingsPage() {
     const loadAISettings = async () => {
       try {
         const settings = await api.getAISettings();
-        setAiProvider(settings.provider);
+        const provider = settings.provider as AIProviderKey;
+        setAiProvider(provider);
         setAiKeySet(settings.api_key_set);
+        // Set model from settings or default to first model of provider
+        if (settings.model) {
+          setAiModel(settings.model);
+        } else {
+          const defaultModel = AI_PROVIDERS[provider]?.models[0]?.id || 'gemini-2.0-flash-exp';
+          setAiModel(defaultModel);
+        }
       } catch (err) {
         console.error('Failed to load AI settings:', err);
       }
@@ -147,6 +207,14 @@ export default function SettingsPage() {
     }
   };
 
+  // Handle provider change - update model to default for new provider
+  const handleProviderChange = (newProvider: AIProviderKey) => {
+    setAiProvider(newProvider);
+    // Set to first (recommended) model for the new provider
+    const defaultModel = AI_PROVIDERS[newProvider].models[0].id;
+    setAiModel(defaultModel);
+  };
+
   const handleSaveAISettings = async () => {
     if (!apiKey.trim()) {
       setSyncMessage('Please enter an API key');
@@ -156,7 +224,7 @@ export default function SettingsPage() {
 
     setAiSaving(true);
     try {
-      await api.saveAISettings(aiProvider, apiKey);
+      await api.saveAISettings(aiProvider, apiKey, aiModel);
       setAiKeySet(true);
       setApiKey(''); // Clear the input after saving
       setSyncMessage('AI settings saved successfully!');
@@ -400,26 +468,70 @@ export default function SettingsPage() {
         <TabsContent value="ai" className="space-y-6">
           <Card>
             <CardHeader>
-              <CardTitle>AI Provider</CardTitle>
-              <CardDescription>Configure your AI assistant for market analysis</CardDescription>
+              <CardTitle>AI Provider & Model</CardTitle>
+              <CardDescription>
+                Configure your AI assistant for options analysis. Deep thinking models are recommended for complex mathematical calculations.
+              </CardDescription>
             </CardHeader>
-            <CardContent className="space-y-4">
+            <CardContent className="space-y-6">
+              {/* Provider Selection */}
               <div className="space-y-2">
                 <Label>Provider</Label>
-                <Select value={aiProvider} onValueChange={setAiProvider}>
+                <Select value={aiProvider} onValueChange={(v) => handleProviderChange(v as AIProviderKey)}>
                   <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="anthropic">Anthropic (Claude)</SelectItem>
-                    <SelectItem value="openai">OpenAI (GPT-4)</SelectItem>
-                    <SelectItem value="google">Google (Gemini)</SelectItem>
+                    {Object.entries(AI_PROVIDERS).map(([key, provider]) => (
+                      <SelectItem key={key} value={key}>
+                        {provider.name}
+                      </SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
               </div>
 
+              {/* Model Selection */}
               <div className="space-y-2">
-                <Label htmlFor="apiKey">API Key</Label>
+                <Label>Model</Label>
+                <Select value={aiModel} onValueChange={setAiModel}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {AI_PROVIDERS[aiProvider].models.map((model) => (
+                      <SelectItem key={model.id} value={model.id}>
+                        <div className="flex items-center gap-2">
+                          <span>{model.name}</span>
+                          {model.tag && (
+                            <Badge
+                              variant={model.tag === 'Recommended' ? 'default' : model.tag === 'Best for Deep Analysis' ? 'secondary' : 'outline'}
+                              className={cn(
+                                'text-xs',
+                                model.tag === 'Recommended' && 'bg-green-500 hover:bg-green-600',
+                                model.tag === 'Best for Deep Analysis' && 'bg-blue-500 hover:bg-blue-600 text-white',
+                                model.tag === 'Cheapest' && 'bg-orange-500/20 text-orange-600 border-orange-500/50'
+                              )}
+                            >
+                              {model.tag}
+                            </Badge>
+                          )}
+                        </div>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {/* Model description */}
+                <p className="text-xs text-muted-foreground">
+                  {AI_PROVIDERS[aiProvider].models.find(m => m.id === aiModel)?.description || ''}
+                </p>
+              </div>
+
+              <Separator />
+
+              {/* API Key */}
+              <div className="space-y-2">
+                <Label htmlFor="apiKey">API Key for {AI_PROVIDERS[aiProvider].name}</Label>
                 <Input
                   id="apiKey"
                   type="password"
@@ -430,7 +542,7 @@ export default function SettingsPage() {
                 {aiKeySet && (
                   <p className="text-sm text-green-500 flex items-center gap-1">
                     <CheckCircle2 className="h-3 w-3" />
-                    API key configured for {aiProvider}
+                    API key configured for {AI_PROVIDERS[aiProvider].name}
                   </p>
                 )}
               </div>
@@ -466,6 +578,33 @@ export default function SettingsPage() {
                     </>
                   )}
                 </Button>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Model Recommendations Card */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Model Recommendations for Options Analysis</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3 text-sm">
+              <div className="flex items-start gap-3">
+                <Badge className="bg-blue-500 hover:bg-blue-600 text-white shrink-0">Best for Deep Analysis</Badge>
+                <p className="text-muted-foreground">
+                  Use Claude 3 Opus, o1-preview, or Gemini 1.5 Pro for complex options strategies, Greeks calculations, and multi-leg analysis.
+                </p>
+              </div>
+              <div className="flex items-start gap-3">
+                <Badge className="bg-green-500 hover:bg-green-600 shrink-0">Recommended</Badge>
+                <p className="text-muted-foreground">
+                  Claude 3.5 Sonnet, GPT-4o, or Gemini 2.0 Flash offer the best balance of speed and accuracy for most tasks.
+                </p>
+              </div>
+              <div className="flex items-start gap-3">
+                <Badge variant="outline" className="bg-orange-500/20 text-orange-600 border-orange-500/50 shrink-0">Cheapest</Badge>
+                <p className="text-muted-foreground">
+                  GPT-3.5 Turbo, Claude Haiku, or Gemini Flash-8B for quick lookups and simple queries where cost matters.
+                </p>
               </div>
             </CardContent>
           </Card>
@@ -543,7 +682,7 @@ export default function SettingsPage() {
             <CardContent className="space-y-4">
               <div className="space-y-2">
                 <Label>Color Theme</Label>
-                <Select defaultValue="dark">
+                <Select value={theme} onValueChange={setTheme}>
                   <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>

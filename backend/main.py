@@ -122,8 +122,9 @@ class ScanRequest(BaseModel):
 
 
 class AISettingsUpdate(BaseModel):
-    provider: str  # anthropic, openai, google
+    provider: str  # anthropic, openai, google, xai, perplexity
     api_key: str
+    model: Optional[str] = None  # specific model ID
 
 
 class SettingUpdate(BaseModel):
@@ -421,18 +422,16 @@ def sync_from_ibkr(account: Optional[str] = None):
         # The avg_cost from IBKR is the per-share average cost basis
         avg_cost_per_share = pos['avg_cost']
 
-        # Try to get current price from IBKR
-        current_price = ibkr.get_stock_price(pos['symbol'])
-
+        # Skip price fetching during sync to avoid blocking - prices can be updated separately
         upsert_stock_holding(
             symbol=pos['symbol'],
             quantity=int(pos['quantity']),
             avg_cost=avg_cost_per_share,
-            current_price=current_price,
+            current_price=None,  # Will be fetched separately to avoid blocking sync
             ibkr_con_id=pos['con_id']
         )
         synced_stocks += 1
-        logger.info(f"Synced stock: {pos['symbol']} qty={pos['quantity']} avg_cost=${avg_cost_per_share:.2f} current=${current_price or 'N/A'}")
+        logger.info(f"Synced stock: {pos['symbol']} qty={pos['quantity']} avg_cost=${avg_cost_per_share:.2f}")
 
     # NOW sync options - holdings are already in database for CC detection
     for pos in option_positions:
@@ -821,16 +820,20 @@ def update_setting(setting: SettingUpdate):
 def get_ai_settings():
     """Get current AI settings."""
     provider = get_setting("ai_provider") or "google"
+    model = get_setting("ai_model")
 
     # Check which API keys are set
     keys_status = {
         "anthropic": bool(get_setting("anthropic_api_key")),
         "openai": bool(get_setting("openai_api_key")),
-        "google": bool(get_setting("google_api_key"))
+        "google": bool(get_setting("google_api_key")),
+        "xai": bool(get_setting("xai_api_key")),
+        "perplexity": bool(get_setting("perplexity_api_key")),
     }
 
     return {
         "provider": provider,
+        "model": model,
         "api_key_set": keys_status.get(provider, False),
         "available_providers": keys_status
     }
@@ -838,12 +841,15 @@ def get_ai_settings():
 
 @app.post("/api/settings/ai")
 def update_ai_settings(ai_settings: AISettingsUpdate):
-    """Update AI provider and API key."""
+    """Update AI provider, model, and API key."""
     set_setting("ai_provider", ai_settings.provider)
     set_setting(f"{ai_settings.provider}_api_key", ai_settings.api_key)
+    if ai_settings.model:
+        set_setting("ai_model", ai_settings.model)
     return {
         "success": True,
         "provider": ai_settings.provider,
+        "model": ai_settings.model,
         "api_key_set": True
     }
 
@@ -852,6 +858,7 @@ def update_ai_settings(ai_settings: AISettingsUpdate):
 def test_ai_connection():
     """Test the AI connection with current settings."""
     provider = get_setting("ai_provider") or "google"
+    model = get_setting("ai_model") or "default"
     api_key = get_setting(f"{provider}_api_key")
 
     if not api_key:
@@ -862,11 +869,16 @@ def test_ai_connection():
         raise HTTPException(status_code=400, detail="Invalid Anthropic API key format")
     if provider == "openai" and not api_key.startswith("sk-"):
         raise HTTPException(status_code=400, detail="Invalid OpenAI API key format")
+    if provider == "xai" and not api_key.startswith("xai-"):
+        raise HTTPException(status_code=400, detail="Invalid xAI API key format")
+    if provider == "perplexity" and not api_key.startswith("pplx-"):
+        raise HTTPException(status_code=400, detail="Invalid Perplexity API key format")
 
     return {
         "success": True,
         "provider": provider,
-        "message": f"API key for {provider} is configured"
+        "model": model,
+        "message": f"API key for {provider} is configured (model: {model})"
     }
 
 
@@ -924,7 +936,7 @@ def get_portfolio_context() -> str:
     return "\n".join(context_parts)
 
 
-async def call_google_ai(messages: List[ChatMessage], api_key: str) -> str:
+async def call_google_ai(messages: List[ChatMessage], api_key: str, model: str = "gemini-2.0-flash-exp") -> str:
     """Call Google Gemini API."""
     portfolio_context = get_portfolio_context()
     full_system = f"{AI_SYSTEM_PROMPT}\n\n{portfolio_context}"
@@ -937,7 +949,7 @@ async def call_google_ai(messages: List[ChatMessage], api_key: str) -> str:
 
     async with httpx.AsyncClient() as client:
         response = await client.post(
-            f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}",
+            f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}",
             json={
                 "contents": contents,
                 "systemInstruction": {"parts": [{"text": full_system}]},
@@ -956,7 +968,7 @@ async def call_google_ai(messages: List[ChatMessage], api_key: str) -> str:
         return data["candidates"][0]["content"]["parts"][0]["text"]
 
 
-async def call_anthropic_ai(messages: List[ChatMessage], api_key: str) -> str:
+async def call_anthropic_ai(messages: List[ChatMessage], api_key: str, model: str = "claude-3-5-sonnet-20241022") -> str:
     """Call Anthropic Claude API."""
     portfolio_context = get_portfolio_context()
     full_system = f"{AI_SYSTEM_PROMPT}\n\n{portfolio_context}"
@@ -975,7 +987,7 @@ async def call_anthropic_ai(messages: List[ChatMessage], api_key: str) -> str:
                 "content-type": "application/json"
             },
             json={
-                "model": "claude-3-5-sonnet-20241022",
+                "model": model,
                 "max_tokens": 2048,
                 "system": full_system,
                 "messages": anthropic_messages
@@ -990,7 +1002,7 @@ async def call_anthropic_ai(messages: List[ChatMessage], api_key: str) -> str:
         return data["content"][0]["text"]
 
 
-async def call_openai_ai(messages: List[ChatMessage], api_key: str) -> str:
+async def call_openai_ai(messages: List[ChatMessage], api_key: str, model: str = "gpt-4o") -> str:
     """Call OpenAI API."""
     portfolio_context = get_portfolio_context()
     full_system = f"{AI_SYSTEM_PROMPT}\n\n{portfolio_context}"
@@ -1008,7 +1020,7 @@ async def call_openai_ai(messages: List[ChatMessage], api_key: str) -> str:
                 "Content-Type": "application/json"
             },
             json={
-                "model": "gpt-4o-mini",
+                "model": model,
                 "messages": openai_messages,
                 "max_tokens": 2048,
                 "temperature": 0.7
@@ -1023,10 +1035,77 @@ async def call_openai_ai(messages: List[ChatMessage], api_key: str) -> str:
         return data["choices"][0]["message"]["content"]
 
 
+async def call_xai_ai(messages: List[ChatMessage], api_key: str, model: str = "grok-2") -> str:
+    """Call xAI Grok API."""
+    portfolio_context = get_portfolio_context()
+    full_system = f"{AI_SYSTEM_PROMPT}\n\n{portfolio_context}"
+
+    # Convert messages to xAI format (OpenAI compatible)
+    xai_messages = [{"role": "system", "content": full_system}]
+    for msg in messages:
+        xai_messages.append({"role": msg.role, "content": msg.content})
+
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            "https://api.x.ai/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "model": model,
+                "messages": xai_messages,
+                "max_tokens": 2048,
+                "temperature": 0.7
+            },
+            timeout=60.0
+        )
+
+        if response.status_code != 200:
+            raise HTTPException(status_code=500, detail=f"xAI error: {response.text}")
+
+        data = response.json()
+        return data["choices"][0]["message"]["content"]
+
+
+async def call_perplexity_ai(messages: List[ChatMessage], api_key: str, model: str = "llama-3.1-sonar-large-128k-online") -> str:
+    """Call Perplexity API."""
+    portfolio_context = get_portfolio_context()
+    full_system = f"{AI_SYSTEM_PROMPT}\n\n{portfolio_context}"
+
+    # Convert messages to Perplexity format (OpenAI compatible)
+    pplx_messages = [{"role": "system", "content": full_system}]
+    for msg in messages:
+        pplx_messages.append({"role": msg.role, "content": msg.content})
+
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            "https://api.perplexity.ai/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "model": model,
+                "messages": pplx_messages,
+                "max_tokens": 2048,
+                "temperature": 0.7
+            },
+            timeout=60.0
+        )
+
+        if response.status_code != 200:
+            raise HTTPException(status_code=500, detail=f"Perplexity error: {response.text}")
+
+        data = response.json()
+        return data["choices"][0]["message"]["content"]
+
+
 @app.post("/api/chat")
 async def chat(request: ChatRequest):
     """Send a message to the AI advisor."""
     provider = get_setting("ai_provider") or "google"
+    model = get_setting("ai_model")
     api_key = get_setting(f"{provider}_api_key")
 
     if not api_key:
@@ -1037,15 +1116,19 @@ async def chat(request: ChatRequest):
 
     try:
         if provider == "google":
-            response = await call_google_ai(request.messages, api_key)
+            response = await call_google_ai(request.messages, api_key, model or "gemini-2.0-flash-exp")
         elif provider == "anthropic":
-            response = await call_anthropic_ai(request.messages, api_key)
+            response = await call_anthropic_ai(request.messages, api_key, model or "claude-3-5-sonnet-20241022")
         elif provider == "openai":
-            response = await call_openai_ai(request.messages, api_key)
+            response = await call_openai_ai(request.messages, api_key, model or "gpt-4o")
+        elif provider == "xai":
+            response = await call_xai_ai(request.messages, api_key, model or "grok-2")
+        elif provider == "perplexity":
+            response = await call_perplexity_ai(request.messages, api_key, model or "llama-3.1-sonar-large-128k-online")
         else:
             raise HTTPException(status_code=400, detail=f"Unknown provider: {provider}")
 
-        return {"response": response, "provider": provider}
+        return {"response": response, "provider": provider, "model": model}
 
     except httpx.TimeoutException:
         raise HTTPException(status_code=504, detail="AI request timed out. Please try again.")
