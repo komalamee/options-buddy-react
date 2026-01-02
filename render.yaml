@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: options-buddy-backend
+    env: python
+    region: oregon
+    plan: free
+    branch: production
+    buildCommand: "cd backend && pip install -r requirements.txt"
+    startCommand: "cd backend && python main_production.py"
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: JWT_SECRET
+        value: W5fravqX7eXoJpCeIQeDzE9ccnWFIDiGqxala4zMzLI=
+      - key: ENCRYPTION_KEY
+        value: +l0y7DpDLn2oOUxEtoPPQ30z7gNB9ZO8nzMztLLOuXQ=
+      - key: RESEND_API_KEY
+        sync: false
+      - key: FRONTEND_URL
+        value: https://options-buddy-react.vercel.app
+      - key: DATABASE_URL
+        value: postgresql://postgres:jesusfuckingchrist1234@db.qjaxsvqlvlguloyzcbnk.supabase.co:5432/postgres
