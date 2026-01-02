@@ -22,6 +22,7 @@ from database import (
     create_closed_position,
     close_position,
     update_position,
+    clear_all_positions,
     get_stock_holdings,
     upsert_stock_holding,
     delete_stock_holding,
@@ -30,6 +31,10 @@ from database import (
     add_symbol_to_watchlist,
     remove_symbol_from_watchlist,
     get_performance_stats,
+    get_open_positions_with_pnl,
+    record_import,
+    get_import_history,
+    clear_import_history,
     get_setting,
     set_setting,
     get_all_settings,
@@ -872,9 +877,21 @@ def calculate_opportunity_score(option_data: dict, stock_price: float, dte: int)
 
 @app.get("/api/performance")
 def get_performance():
-    """Get performance statistics."""
+    """Get performance statistics including detailed trade breakdown."""
     stats = get_performance_stats()
     return stats
+
+
+@app.get("/api/performance/open-positions")
+def get_performance_open_positions():
+    """Get open positions with unrealized P&L for the performance page."""
+    positions = get_open_positions_with_pnl()
+    total_unrealized = sum(p['unrealized_pnl'] for p in positions)
+    return {
+        'positions': positions,
+        'total_unrealized_pnl': round(total_unrealized, 2),
+        'count': len(positions)
+    }
 
 
 # ==================== PORTFOLIO SUMMARY ====================
@@ -1489,16 +1506,27 @@ def parse_ibkr_datetime(datetime_str: str) -> str:
 
 
 @app.post("/api/import/ibkr-trades")
-async def import_ibkr_trades(file: UploadFile = File(...)):
+async def import_ibkr_trades(
+    file: UploadFile = File(...),
+    clear_existing: bool = Query(default=False, description="Clear all existing positions before import")
+):
     """
     Import historical trades from IBKR Activity Statement CSV.
 
     Parses the CSV, finds option trades in the "Trades" section,
     matches opening trades with closing trades, and creates
     closed position records.
+
+    Set clear_existing=true to delete all existing positions before importing.
     """
     if not file.filename.endswith('.csv'):
         raise HTTPException(status_code=400, detail="File must be a CSV")
+
+    # Clear existing positions if requested
+    cleared = 0
+    if clear_existing:
+        cleared = clear_all_positions()
+        logger.info(f"Cleared {cleared} existing positions before import")
 
     try:
         content = await file.read()
@@ -1556,8 +1584,9 @@ async def import_ibkr_trades(file: UploadFile = File(...)):
         trades.sort(key=lambda t: t['datetime'])
 
         # Separate opens (O) and closes (C, Ep)
-        opens = [t for t in trades if t['code'] == 'O']
-        closes = [t for t in trades if t['code'] in ('C', 'Ep')]
+        # Use 'in' check to handle compound codes like 'C;Ep'
+        opens = [t for t in trades if 'O' in t['code']]
+        closes = [t for t in trades if 'C' in t['code'] or 'Ep' in t['code']]
 
         # Match opens with closes (simple FIFO matching)
         for open_trade in opens:
@@ -1570,8 +1599,31 @@ async def import_ibkr_trades(file: UploadFile = File(...)):
                     break
 
             if not matching_close:
-                # No matching close found - could be open position, skip
-                skipped += 1
+                # No matching close found - this is an open position, import it as OPEN
+                try:
+                    underlying, expiry, strike, option_type = parse_ibkr_option_symbol(symbol)
+                    open_date = parse_ibkr_datetime(open_trade['datetime'])
+                    premium_per_share = open_trade['trade_price']
+                    strategy_type = 'CSP' if option_type == 'PUT' else 'NAKED'
+                    notes = "Imported from IBKR CSV - Open position"
+
+                    # Create position as OPEN
+                    position_id = create_position(
+                        underlying=underlying,
+                        option_type=option_type,
+                        strike=strike,
+                        expiry=expiry,
+                        quantity=abs(open_trade['quantity']),
+                        premium_collected=premium_per_share,
+                        strategy_type=strategy_type,
+                        open_date=open_date,
+                        notes=notes
+                    )
+                    imported += 1
+                    logger.info(f"Imported OPEN: {underlying} ${strike} {option_type} {expiry}")
+                except Exception as e:
+                    errors.append(f"{symbol} (open): {str(e)}")
+                    logger.error(f"Error importing open position {symbol}: {e}")
                 continue
 
             try:
@@ -1583,10 +1635,11 @@ async def import_ibkr_trades(file: UploadFile = File(...)):
                 # Calculate premium and close price
                 # Open trade: quantity is negative for sell, price is per share
                 premium_per_share = open_trade['trade_price']
-                close_price = matching_close['trade_price'] if matching_close['code'] == 'C' else 0
+                # For expired positions (code contains 'Ep'), close price is 0
+                close_price = matching_close['trade_price'] if 'C' in matching_close['code'] and 'Ep' not in matching_close['code'] else 0
 
                 # Determine status
-                status = 'EXPIRED' if matching_close['code'] == 'Ep' else 'CLOSED'
+                status = 'EXPIRED' if 'Ep' in matching_close['code'] else 'CLOSED'
 
                 # Determine strategy (CSP for puts, assume naked for calls unless we know holdings)
                 strategy_type = 'CSP' if option_type == 'PUT' else 'NAKED'
@@ -1622,13 +1675,40 @@ async def import_ibkr_trades(file: UploadFile = File(...)):
                 errors.append(f"{symbol}: {str(e)}")
                 logger.error(f"Error importing {symbol}: {e}")
 
+    message = f"Successfully imported {imported} trades (including open positions)."
+    if cleared > 0:
+        message = f"Cleared {cleared} existing positions. " + message
+
+    # Record this import in history
+    record_import(
+        filename=file.filename,
+        trades_imported=imported,
+        trades_skipped=skipped,
+        errors=errors if errors else None
+    )
+
     return {
         "success": True,
         "imported": imported,
         "skipped": skipped,
+        "cleared": cleared,
         "errors": errors,
-        "message": f"Successfully imported {imported} closed trades. Skipped {skipped} (likely still open)."
+        "message": message
     }
+
+
+@app.get("/api/import/history")
+async def get_import_history_endpoint(limit: int = 20):
+    """Get the import history."""
+    history = get_import_history(limit)
+    return {"history": history}
+
+
+@app.delete("/api/import/history")
+async def clear_import_history_endpoint():
+    """Clear all import history."""
+    cleared = clear_import_history()
+    return {"cleared": cleared, "message": f"Cleared {cleared} import records."}
 
 
 # ==================== RUN SERVER ====================

@@ -78,6 +78,39 @@ export interface PortfolioSummary {
   total_trades: number;
 }
 
+export interface TradeDetail {
+  id: number;
+  symbol: string;
+  underlying: string;
+  option_type: 'CALL' | 'PUT';
+  strike: number;
+  expiry: string;
+  pnl: number;
+  premium_collected: number;
+  close_price: number;
+  quantity: number;
+  strategy: string;
+  open_date: string;
+  close_date: string;
+  status: string;
+  is_winner: boolean;
+}
+
+export interface OpenPositionWithPnl {
+  id: number;
+  symbol: string;
+  underlying: string;
+  option_type: 'CALL' | 'PUT';
+  strike: number;
+  expiry: string;
+  premium_collected: number;
+  quantity: number;
+  strategy: string;
+  open_date: string;
+  status: string;
+  unrealized_pnl: number;
+}
+
 export interface PerformanceStats {
   total_trades: number;
   winning_trades: number;
@@ -89,6 +122,13 @@ export interface PerformanceStats {
   best_trade?: { symbol: string; pnl: number };
   worst_trade?: { symbol: string; pnl: number };
   profit_factor: number;
+  trades: TradeDetail[];
+}
+
+export interface OpenPositionsResponse {
+  positions: OpenPositionWithPnl[];
+  total_unrealized_pnl: number;
+  count: number;
 }
 
 export interface WheelChain {
@@ -153,6 +193,16 @@ export interface AutoWheelSummary {
   total_premium_collected: number;
   total_pending_premium: number;
   average_cost_reduction: number;
+}
+
+export interface ImportHistoryRecord {
+  id: number;
+  filename: string;
+  import_type: string;
+  trades_imported: number;
+  trades_skipped: number;
+  errors: string | null;
+  imported_at: string;
 }
 
 // ==================== API Client ====================
@@ -426,6 +476,10 @@ class ApiClient {
     return this.request('/api/performance');
   }
 
+  async getOpenPositionsWithPnl(): Promise<OpenPositionsResponse> {
+    return this.request('/api/performance/open-positions');
+  }
+
   // ==================== Portfolio Summary ====================
 
   async getPortfolioSummary(): Promise<PortfolioSummary> {
@@ -558,17 +612,23 @@ class ApiClient {
 
   // ==================== Data Import ====================
 
-  async importIBKRTrades(file: File): Promise<{
+  async importIBKRTrades(file: File, clearExisting: boolean = false): Promise<{
     success: boolean;
     imported: number;
     skipped: number;
+    cleared: number;
     errors: string[];
     message: string;
   }> {
     const formData = new FormData();
     formData.append('file', file);
 
-    const response = await fetch(`${this.baseUrl}/api/import/ibkr-trades`, {
+    const url = new URL(`${this.baseUrl}/api/import/ibkr-trades`);
+    if (clearExisting) {
+      url.searchParams.set('clear_existing', 'true');
+    }
+
+    const response = await fetch(url.toString(), {
       method: 'POST',
       body: formData,
       // Note: Don't set Content-Type header - browser will set it with boundary for FormData
@@ -579,6 +639,24 @@ class ApiClient {
       throw new Error(error.detail || `API error: ${response.status}`);
     }
 
+    return response.json();
+  }
+
+  async getImportHistory(limit: number = 20): Promise<{ history: ImportHistoryRecord[] }> {
+    const response = await fetch(`${this.baseUrl}/api/import/history?limit=${limit}`);
+    if (!response.ok) {
+      throw new Error(`Failed to get import history: ${response.status}`);
+    }
+    return response.json();
+  }
+
+  async clearImportHistory(): Promise<{ cleared: number; message: string }> {
+    const response = await fetch(`${this.baseUrl}/api/import/history`, {
+      method: 'DELETE',
+    });
+    if (!response.ok) {
+      throw new Error(`Failed to clear import history: ${response.status}`);
+    }
     return response.json();
   }
 }

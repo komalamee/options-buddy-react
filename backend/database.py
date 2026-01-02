@@ -113,6 +113,19 @@ def init_db():
             )
         ''')
 
+        # Import history table - tracks CSV imports
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS import_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                filename TEXT NOT NULL,
+                import_type TEXT NOT NULL DEFAULT 'IBKR',
+                trades_imported INTEGER NOT NULL DEFAULT 0,
+                trades_skipped INTEGER NOT NULL DEFAULT 0,
+                errors TEXT,
+                imported_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
         # Wheel chains table - tracks premium accumulation across multiple positions
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS wheel_chains (
@@ -241,6 +254,17 @@ def get_position_by_id(position_id: int) -> Optional[dict]:
         cursor.execute('SELECT * FROM positions WHERE id = ?', (position_id,))
         row = cursor.fetchone()
         return dict(row) if row else None
+
+
+def clear_all_positions() -> int:
+    """Delete all positions from the database. Returns number deleted."""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('SELECT COUNT(*) FROM positions')
+        count = cursor.fetchone()[0]
+        cursor.execute('DELETE FROM positions')
+        conn.commit()
+        return count
 
 
 def create_position(
@@ -473,19 +497,25 @@ def get_performance_stats() -> dict:
     with get_db_connection() as conn:
         cursor = conn.cursor()
 
-        # Get all closed positions
+        # Get all closed positions with full details
         cursor.execute('''
             SELECT
+                id,
                 underlying,
                 option_type,
+                strike,
+                expiry,
                 premium_collected,
                 close_price,
                 quantity,
                 strategy_type,
                 open_date,
-                close_date
+                close_date,
+                status,
+                notes
             FROM positions
             WHERE status IN ('CLOSED', 'EXPIRED', 'ASSIGNED')
+            ORDER BY close_date DESC
         ''')
 
         closed = cursor.fetchall()
@@ -501,13 +531,39 @@ def get_performance_stats() -> dict:
                 'avg_loss': 0,
                 'best_trade': None,
                 'worst_trade': None,
-                'profit_factor': 0
+                'profit_factor': 0,
+                'trades': []
             }
 
         pnl_list = []
+        trades = []
         for row in closed:
             # P&L = (premium_collected - close_price) * quantity * 100
             pnl = (row['premium_collected'] - (row['close_price'] or 0)) * row['quantity'] * 100
+
+            # Format symbol for display: TSLA $410 PUT 10/17
+            expiry_formatted = row['expiry'][5:7] + '/' + row['expiry'][8:10] if row['expiry'] else ''
+            display_symbol = f"{row['underlying']} ${row['strike']:.0f} {row['option_type']} {expiry_formatted}"
+
+            trade_detail = {
+                'id': row['id'],
+                'symbol': display_symbol,
+                'underlying': row['underlying'],
+                'option_type': row['option_type'],
+                'strike': row['strike'],
+                'expiry': row['expiry'],
+                'pnl': round(pnl, 2),
+                'premium_collected': row['premium_collected'],
+                'close_price': row['close_price'] or 0,
+                'quantity': row['quantity'],
+                'strategy': row['strategy_type'],
+                'open_date': row['open_date'],
+                'close_date': row['close_date'],
+                'status': row['status'],
+                'is_winner': pnl > 0
+            }
+            trades.append(trade_detail)
+
             pnl_list.append({
                 'symbol': row['underlying'],
                 'pnl': pnl,
@@ -520,18 +576,113 @@ def get_performance_stats() -> dict:
         total_wins = sum(p['pnl'] for p in wins)
         total_losses = abs(sum(p['pnl'] for p in losses))
 
+        # Get best and worst with full symbol info from trades list
+        best_trade = max(trades, key=lambda x: x['pnl']) if trades else None
+        worst_trade = min(trades, key=lambda x: x['pnl']) if trades else None
+
         return {
             'total_trades': len(pnl_list),
             'winning_trades': len(wins),
             'losing_trades': len(losses),
             'win_rate': (len(wins) / len(pnl_list) * 100) if pnl_list else 0,
-            'total_realized_pnl': sum(p['pnl'] for p in pnl_list),
-            'avg_win': (total_wins / len(wins)) if wins else 0,
-            'avg_loss': (total_losses / len(losses)) if losses else 0,
-            'best_trade': max(pnl_list, key=lambda x: x['pnl']) if pnl_list else None,
-            'worst_trade': min(pnl_list, key=lambda x: x['pnl']) if pnl_list else None,
-            'profit_factor': (total_wins / total_losses) if total_losses > 0 else float('inf')
+            'total_realized_pnl': round(sum(p['pnl'] for p in pnl_list), 2),
+            'avg_win': round((total_wins / len(wins)), 2) if wins else 0,
+            'avg_loss': round((total_losses / len(losses)), 2) if losses else 0,
+            'best_trade': {'symbol': best_trade['symbol'], 'pnl': best_trade['pnl']} if best_trade else None,
+            'worst_trade': {'symbol': worst_trade['symbol'], 'pnl': worst_trade['pnl']} if worst_trade else None,
+            'profit_factor': round((total_wins / total_losses), 2) if total_losses > 0 else float('inf'),
+            'trades': trades
         }
+
+
+def get_open_positions_with_pnl() -> list:
+    """Get all open positions with unrealized P&L calculated."""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT
+                id,
+                underlying,
+                option_type,
+                strike,
+                expiry,
+                premium_collected,
+                quantity,
+                strategy_type,
+                open_date,
+                status,
+                notes
+            FROM positions
+            WHERE status = 'OPEN'
+            ORDER BY expiry ASC
+        ''')
+        rows = cursor.fetchall()
+
+        positions = []
+        for row in rows:
+            # Format symbol for display
+            expiry_formatted = row['expiry'][5:7] + '/' + row['expiry'][8:10] if row['expiry'] else ''
+            display_symbol = f"{row['underlying']} ${row['strike']:.0f} {row['option_type']} {expiry_formatted}"
+
+            # Calculate unrealized P&L (for sold options, premium collected is the max profit)
+            # This is a simplified calculation - ideally we'd have current market price
+            unrealized_pnl = row['premium_collected'] * row['quantity'] * 100
+
+            positions.append({
+                'id': row['id'],
+                'symbol': display_symbol,
+                'underlying': row['underlying'],
+                'option_type': row['option_type'],
+                'strike': row['strike'],
+                'expiry': row['expiry'],
+                'premium_collected': row['premium_collected'],
+                'quantity': row['quantity'],
+                'strategy': row['strategy_type'],
+                'open_date': row['open_date'],
+                'status': row['status'],
+                'unrealized_pnl': round(unrealized_pnl, 2)
+            })
+
+        return positions
+
+
+# ==================== IMPORT HISTORY ====================
+
+def record_import(filename: str, trades_imported: int, trades_skipped: int, errors: list = None) -> int:
+    """Record an import in the history. Returns the import ID."""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO import_history (filename, trades_imported, trades_skipped, errors)
+            VALUES (?, ?, ?, ?)
+        ''', (filename, trades_imported, trades_skipped, ','.join(errors) if errors else None))
+        conn.commit()
+        return cursor.lastrowid
+
+
+def get_import_history(limit: int = 20) -> list:
+    """Get the import history, most recent first."""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT id, filename, import_type, trades_imported, trades_skipped, errors, imported_at
+            FROM import_history
+            ORDER BY imported_at DESC
+            LIMIT ?
+        ''', (limit,))
+        rows = cursor.fetchall()
+        return [dict(row) for row in rows]
+
+
+def clear_import_history() -> int:
+    """Clear all import history. Returns number deleted."""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('SELECT COUNT(*) FROM import_history')
+        count = cursor.fetchone()[0]
+        cursor.execute('DELETE FROM import_history')
+        conn.commit()
+        return count
 
 
 # ==================== APP SETTINGS ====================

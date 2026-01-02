@@ -40,7 +40,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { usePortfolioStore } from '@/stores/portfolio-store';
-import { api } from '@/lib/api';
+import { api, ImportHistoryRecord } from '@/lib/api';
 import { useTheme } from 'next-themes';
 
 // AI Provider and Model Configuration
@@ -125,13 +125,17 @@ export default function SettingsPage() {
   // CSV Import state
   const [csvFile, setCsvFile] = useState<File | null>(null);
   const [isImporting, setIsImporting] = useState(false);
+  const [clearBeforeImport, setClearBeforeImport] = useState(false);
   const [importResult, setImportResult] = useState<{
     success: boolean;
     imported: number;
     skipped: number;
+    cleared?: number;
     errors: string[];
     message: string;
   } | null>(null);
+  const [importHistory, setImportHistory] = useState<ImportHistoryRecord[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(true);
 
   // Load AI settings on mount
   useEffect(() => {
@@ -192,6 +196,23 @@ export default function SettingsPage() {
       }
     };
     loadSelectedAccount();
+  }, []);
+
+  // Load import history on mount
+  const loadImportHistory = async () => {
+    try {
+      setHistoryLoading(true);
+      const { history } = await api.getImportHistory();
+      setImportHistory(history);
+    } catch (err) {
+      console.error('Failed to load import history:', err);
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadImportHistory();
   }, []);
 
   // Save notification setting
@@ -302,17 +323,21 @@ export default function SettingsPage() {
     setImportResult(null);
 
     try {
-      const result = await api.importIBKRTrades(csvFile);
+      const result = await api.importIBKRTrades(csvFile, clearBeforeImport);
       setImportResult(result);
       if (result.success && result.imported > 0) {
-        setSyncMessage(`Successfully imported ${result.imported} historical trades!`);
+        const clearedMsg = result.cleared && result.cleared > 0 ? `Cleared ${result.cleared} existing positions. ` : '';
+        setSyncMessage(`${clearedMsg}Successfully imported ${result.imported} historical trades!`);
         setTimeout(() => setSyncMessage(''), 5000);
+        // Refresh import history after successful import
+        loadImportHistory();
       }
     } catch (err) {
       setImportResult({
         success: false,
         imported: 0,
         skipped: 0,
+        cleared: 0,
         errors: [err instanceof Error ? err.message : 'Unknown error'],
         message: 'Import failed',
       });
@@ -799,9 +824,26 @@ export default function SettingsPage() {
                   </Button>
                 </div>
                 {csvFile && (
-                  <p className="text-sm text-muted-foreground">
-                    Selected: {csvFile.name} ({(csvFile.size / 1024).toFixed(1)} KB)
-                  </p>
+                  <div className="space-y-2">
+                    <p className="text-sm text-muted-foreground">
+                      Selected: {csvFile.name} ({(csvFile.size / 1024).toFixed(1)} KB)
+                    </p>
+                    <div className="flex items-center space-x-2">
+                      <Switch
+                        id="clear-before-import"
+                        checked={clearBeforeImport}
+                        onCheckedChange={setClearBeforeImport}
+                      />
+                      <Label htmlFor="clear-before-import" className="text-sm cursor-pointer">
+                        Clear existing positions before import
+                      </Label>
+                    </div>
+                    {clearBeforeImport && (
+                      <p className="text-xs text-yellow-600 dark:text-yellow-400">
+                        Warning: This will delete all existing position data before importing.
+                      </p>
+                    )}
+                  </div>
                 )}
               </div>
 
@@ -853,6 +895,65 @@ export default function SettingsPage() {
                       </ul>
                     </div>
                   )}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Import History */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base flex items-center justify-between">
+                <span>Import History</span>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={loadImportHistory}
+                  disabled={historyLoading}
+                >
+                  <RefreshCw className={cn("h-4 w-4", historyLoading && "animate-spin")} />
+                </Button>
+              </CardTitle>
+              <CardDescription>
+                Previously imported CSV files are stored in your database and persist across sessions
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {historyLoading ? (
+                <div className="text-center py-4 text-muted-foreground">Loading...</div>
+              ) : importHistory.length === 0 ? (
+                <div className="text-center py-4 text-muted-foreground">
+                  No imports yet. Upload a CSV to get started.
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {importHistory.map((record) => (
+                    <div
+                      key={record.id}
+                      className="flex items-center justify-between p-3 bg-muted/50 rounded-lg"
+                    >
+                      <div className="flex items-center gap-3">
+                        <FileSpreadsheet className="h-5 w-5 text-muted-foreground" />
+                        <div>
+                          <p className="font-medium text-sm">{record.filename}</p>
+                          <p className="text-xs text-muted-foreground">
+                            {new Date(record.imported_at).toLocaleDateString()} at{' '}
+                            {new Date(record.imported_at).toLocaleTimeString()}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Badge variant="secondary" className="text-xs">
+                          {record.trades_imported} trades
+                        </Badge>
+                        {record.trades_skipped > 0 && (
+                          <Badge variant="outline" className="text-xs">
+                            {record.trades_skipped} skipped
+                          </Badge>
+                        )}
+                      </div>
+                    </div>
+                  ))}
                 </div>
               )}
             </CardContent>

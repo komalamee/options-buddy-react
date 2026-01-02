@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { api, ConnectionStatus, PortfolioSummary as ApiPortfolioSummary, PerformanceStats, WheelChain, AutoWheelAnalysis, AutoWheelSummary } from '@/lib/api';
+import { api, ConnectionStatus, PortfolioSummary as ApiPortfolioSummary, PerformanceStats, WheelChain, AutoWheelAnalysis, AutoWheelSummary, TradeDetail, OpenPositionWithPnl, OpenPositionsResponse } from '@/lib/api';
 
 // ==================== Types ====================
 
@@ -69,7 +69,7 @@ export interface WheelChainSummary {
 }
 
 // Re-export types from api.ts for convenience
-export type { WheelChain, AutoWheelAnalysis, AutoWheelSummary } from '@/lib/api';
+export type { WheelChain, AutoWheelAnalysis, AutoWheelSummary, TradeDetail, OpenPositionWithPnl } from '@/lib/api';
 
 // ==================== Store Interface ====================
 
@@ -82,6 +82,8 @@ interface PortfolioState {
   alerts: Alert[];
   ibkrStatus: IBKRStatus;
   performance: PerformanceStats | null;
+  openPositionsWithPnl: OpenPositionWithPnl[];
+  totalUnrealizedPnl: number;
 
   // Wheel chains (manual - legacy)
   wheelChains: WheelChain[];
@@ -117,6 +119,7 @@ interface PortfolioState {
   fetchHoldings: () => Promise<void>;
   fetchSummary: () => Promise<void>;
   fetchPerformance: () => Promise<void>;
+  fetchOpenPositionsWithPnl: () => Promise<void>;
   fetchAll: () => Promise<void>;
   syncWithIBKR: (account?: string) => Promise<boolean>;
   generateAlerts: () => void;
@@ -180,6 +183,8 @@ export const usePortfolioStore = create<PortfolioState>((set, get) => ({
   alerts: [],
   ibkrStatus: { connected: false },
   performance: null,
+  openPositionsWithPnl: [],
+  totalUnrealizedPnl: 0,
   wheelChains: [],
   wheelChainSummary: defaultWheelChainSummary,
   selectedChainId: null,
@@ -318,6 +323,18 @@ export const usePortfolioStore = create<PortfolioState>((set, get) => ({
       set({ performance });
     } catch (error) {
       console.error('Failed to fetch performance:', error);
+    }
+  },
+
+  fetchOpenPositionsWithPnl: async () => {
+    try {
+      const response = await api.getOpenPositionsWithPnl();
+      set({
+        openPositionsWithPnl: response.positions,
+        totalUnrealizedPnl: response.total_unrealized_pnl,
+      });
+    } catch (error) {
+      console.error('Failed to fetch open positions with P&L:', error);
     }
   },
 

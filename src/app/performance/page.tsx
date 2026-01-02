@@ -17,7 +17,15 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { TrendingUp, TrendingDown, Trophy, Target, BarChart3, Calendar, RefreshCw } from 'lucide-react';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
+import { TrendingUp, TrendingDown, Trophy, Target, BarChart3, Calendar, RefreshCw, CheckCircle2, XCircle, Clock } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { usePortfolioStore } from '@/stores/portfolio-store';
 
@@ -28,6 +36,14 @@ function formatCurrency(value: number) {
     minimumFractionDigits: 2,
   }).format(Math.abs(value));
   return value >= 0 ? `+${formatted}` : `-${formatted}`;
+}
+
+function formatCurrencyPlain(value: number) {
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: 2,
+  }).format(value);
 }
 
 function StatCard({
@@ -72,19 +88,20 @@ function StatCard({
 }
 
 export default function PerformancePage() {
-  const { performance, summary, fetchPerformance, isLoading } = usePortfolioStore();
+  const { performance, openPositionsWithPnl, totalUnrealizedPnl, fetchPerformance, fetchOpenPositionsWithPnl, isLoading } = usePortfolioStore();
 
   useEffect(() => {
     fetchPerformance();
-  }, [fetchPerformance]);
+    fetchOpenPositionsWithPnl();
+  }, [fetchPerformance, fetchOpenPositionsWithPnl]);
 
   // Use performance data from store, with fallbacks
   const stats = {
-    totalPnl: (performance?.total_realized_pnl || 0) + (summary.unrealizedPnl || 0),
-    realizedPnl: performance?.total_realized_pnl || summary.realizedPnl || 0,
-    unrealizedPnl: summary.unrealizedPnl || 0,
-    winRate: performance?.win_rate || summary.winRate || 0,
-    totalTrades: performance?.total_trades || summary.totalTrades || 0,
+    totalPnl: (performance?.total_realized_pnl || 0) + (totalUnrealizedPnl || 0),
+    realizedPnl: performance?.total_realized_pnl || 0,
+    unrealizedPnl: totalUnrealizedPnl || 0,
+    winRate: performance?.win_rate || 0,
+    totalTrades: performance?.total_trades || 0,
     avgWin: performance?.avg_win || 0,
     avgLoss: performance?.avg_loss || 0,
     bestTrade: performance?.best_trade || null,
@@ -92,6 +109,7 @@ export default function PerformancePage() {
     profitFactor: performance?.profit_factor || 0,
     winningTrades: performance?.winning_trades || 0,
     losingTrades: performance?.losing_trades || 0,
+    trades: performance?.trades || [],
   };
 
   if (isLoading) {
@@ -126,7 +144,7 @@ export default function PerformancePage() {
         </Select>
       </div>
 
-      {/* Stats Overview */}
+      {/* Stats Overview - 4 cards */}
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
         <StatCard
           title="Total P&L"
@@ -143,24 +161,25 @@ export default function PerformancePage() {
           valueColor={stats.realizedPnl >= 0 ? 'green' : 'red'}
         />
         <StatCard
-          title="Win Rate"
-          value={`${stats.winRate.toFixed(1)}%`}
-          subtitle={`${stats.totalTrades} total trades`}
-          icon={Trophy}
+          title="Unrealized P&L"
+          value={formatCurrency(stats.unrealizedPnl)}
+          subtitle={`${openPositionsWithPnl.length} open positions`}
+          icon={Clock}
+          valueColor={stats.unrealizedPnl >= 0 ? 'green' : 'red'}
         />
         <StatCard
-          title="Total Trades"
-          value={stats.totalTrades.toString()}
+          title="Win Rate"
+          value={`${stats.winRate.toFixed(1)}%`}
           subtitle={`${stats.winningTrades}W / ${stats.losingTrades}L`}
-          icon={BarChart3}
+          icon={Trophy}
         />
       </div>
 
       <Tabs defaultValue="overview" className="space-y-6">
         <TabsList>
           <TabsTrigger value="overview">Overview</TabsTrigger>
-          <TabsTrigger value="monthly">Monthly</TabsTrigger>
-          <TabsTrigger value="strategies">By Strategy</TabsTrigger>
+          <TabsTrigger value="closed">Closed Trades</TabsTrigger>
+          <TabsTrigger value="open">Open Positions</TabsTrigger>
         </TabsList>
 
         {/* Overview Tab */}
@@ -173,6 +192,10 @@ export default function PerformancePage() {
                 <CardDescription>Key performance metrics</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
+                <div className="flex justify-between items-center py-2 border-b">
+                  <span className="text-muted-foreground">Total Trades</span>
+                  <span className="font-medium">{stats.totalTrades}</span>
+                </div>
                 <div className="flex justify-between items-center py-2 border-b">
                   <span className="text-muted-foreground">Average Win</span>
                   <span className="font-medium text-green-500">
@@ -212,22 +235,52 @@ export default function PerformancePage() {
               </CardContent>
             </Card>
 
-            {/* P&L Chart Placeholder */}
+            {/* P&L Summary */}
             <Card>
               <CardHeader>
-                <CardTitle>P&L Over Time</CardTitle>
-                <CardDescription>Cumulative profit/loss</CardDescription>
+                <CardTitle>P&L Summary</CardTitle>
+                <CardDescription>Realized vs Unrealized breakdown</CardDescription>
               </CardHeader>
-              <CardContent>
-                <div className="h-[250px] flex items-center justify-center border-2 border-dashed border-border rounded-lg">
-                  <div className="text-center">
-                    <BarChart3 className="h-12 w-12 text-muted-foreground mx-auto mb-2" />
-                    <p className="text-sm text-muted-foreground">
-                      Chart visualization coming soon
-                    </p>
-                    <p className="text-xs text-muted-foreground mt-1">
-                      {stats.totalTrades === 0 ? 'No trade history yet' : 'Requires more trade history'}
-                    </p>
+              <CardContent className="space-y-6">
+                <div className="space-y-3">
+                  <div className="flex justify-between items-center">
+                    <span className="text-muted-foreground">Realized P&L</span>
+                    <span className={cn(
+                      "text-xl font-bold",
+                      stats.realizedPnl >= 0 ? 'text-green-500' : 'text-red-500'
+                    )}>
+                      {formatCurrency(stats.realizedPnl)}
+                    </span>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    From {stats.totalTrades} closed trades ({stats.winningTrades} wins, {stats.losingTrades} losses)
+                  </p>
+                </div>
+
+                <div className="border-t pt-4 space-y-3">
+                  <div className="flex justify-between items-center">
+                    <span className="text-muted-foreground">Unrealized P&L</span>
+                    <span className={cn(
+                      "text-xl font-bold",
+                      stats.unrealizedPnl >= 0 ? 'text-green-500' : 'text-red-500'
+                    )}>
+                      {formatCurrency(stats.unrealizedPnl)}
+                    </span>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    From {openPositionsWithPnl.length} open positions
+                  </p>
+                </div>
+
+                <div className="border-t pt-4">
+                  <div className="flex justify-between items-center">
+                    <span className="font-medium">Total P&L</span>
+                    <span className={cn(
+                      "text-2xl font-bold",
+                      stats.totalPnl >= 0 ? 'text-green-500' : 'text-red-500'
+                    )}>
+                      {formatCurrency(stats.totalPnl)}
+                    </span>
                   </div>
                 </div>
               </CardContent>
@@ -235,58 +288,192 @@ export default function PerformancePage() {
           </div>
         </TabsContent>
 
-        {/* Monthly Tab */}
-        <TabsContent value="monthly">
+        {/* Closed Trades Tab */}
+        <TabsContent value="closed">
           <Card>
             <CardHeader>
-              <CardTitle>Monthly Breakdown</CardTitle>
-              <CardDescription>Performance by month</CardDescription>
+              <CardTitle>Closed Trades</CardTitle>
+              <CardDescription>
+                Detailed breakdown of all realized trades
+              </CardDescription>
             </CardHeader>
             <CardContent>
-              {stats.totalTrades === 0 ? (
+              {stats.trades.length === 0 ? (
                 <div className="text-center py-8">
-                  <Calendar className="h-12 w-12 text-muted-foreground mx-auto mb-2" />
-                  <p className="text-muted-foreground">No trade history yet</p>
+                  <Target className="h-12 w-12 text-muted-foreground mx-auto mb-2" />
+                  <p className="text-muted-foreground">No closed trades yet</p>
                   <p className="text-sm text-muted-foreground mt-1">
-                    Complete some trades to see monthly breakdown
+                    Import your trades from IBKR or close some positions
                   </p>
                 </div>
               ) : (
-                <div className="text-center py-8">
-                  <Calendar className="h-12 w-12 text-muted-foreground mx-auto mb-2" />
-                  <p className="text-muted-foreground">Monthly breakdown coming soon</p>
-                  <p className="text-sm text-muted-foreground mt-1">
-                    This feature is being developed
-                  </p>
+                <div className="rounded-md border">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead className="w-[50px]">Result</TableHead>
+                        <TableHead>Option</TableHead>
+                        <TableHead>Strategy</TableHead>
+                        <TableHead className="text-right">Premium</TableHead>
+                        <TableHead className="text-right">Close Price</TableHead>
+                        <TableHead className="text-right">P&L</TableHead>
+                        <TableHead>Open Date</TableHead>
+                        <TableHead>Close Date</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {stats.trades.map((trade) => (
+                        <TableRow key={trade.id}>
+                          <TableCell>
+                            {trade.is_winner ? (
+                              <CheckCircle2 className="h-5 w-5 text-green-500" />
+                            ) : (
+                              <XCircle className="h-5 w-5 text-red-500" />
+                            )}
+                          </TableCell>
+                          <TableCell className="font-medium">
+                            {trade.symbol}
+                          </TableCell>
+                          <TableCell>
+                            <Badge variant="outline">{trade.strategy}</Badge>
+                          </TableCell>
+                          <TableCell className="text-right">
+                            {formatCurrencyPlain(trade.premium_collected)}
+                          </TableCell>
+                          <TableCell className="text-right">
+                            {trade.status === 'EXPIRED' ? (
+                              <span className="text-muted-foreground">Expired</span>
+                            ) : (
+                              formatCurrencyPlain(trade.close_price)
+                            )}
+                          </TableCell>
+                          <TableCell className={cn(
+                            "text-right font-semibold",
+                            trade.is_winner ? 'text-green-500' : 'text-red-500'
+                          )}>
+                            {formatCurrency(trade.pnl)}
+                          </TableCell>
+                          <TableCell className="text-muted-foreground">
+                            {trade.open_date}
+                          </TableCell>
+                          <TableCell className="text-muted-foreground">
+                            {trade.close_date}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              )}
+
+              {/* Summary row */}
+              {stats.trades.length > 0 && (
+                <div className="mt-4 pt-4 border-t flex justify-between items-center">
+                  <div className="space-x-4">
+                    <span className="text-sm text-muted-foreground">
+                      {stats.trades.length} trades total
+                    </span>
+                    <Badge variant="outline" className="text-green-600">
+                      {stats.winningTrades} Wins
+                    </Badge>
+                    <Badge variant="outline" className="text-red-600">
+                      {stats.losingTrades} Losses
+                    </Badge>
+                  </div>
+                  <div className="text-right">
+                    <span className="text-sm text-muted-foreground mr-2">Total Realized:</span>
+                    <span className={cn(
+                      "text-lg font-bold",
+                      stats.realizedPnl >= 0 ? 'text-green-500' : 'text-red-500'
+                    )}>
+                      {formatCurrency(stats.realizedPnl)}
+                    </span>
+                  </div>
                 </div>
               )}
             </CardContent>
           </Card>
         </TabsContent>
 
-        {/* Strategies Tab */}
-        <TabsContent value="strategies">
+        {/* Open Positions Tab */}
+        <TabsContent value="open">
           <Card>
             <CardHeader>
-              <CardTitle>Strategy Performance</CardTitle>
-              <CardDescription>Results by strategy type</CardDescription>
+              <CardTitle>Open Positions</CardTitle>
+              <CardDescription>
+                Current positions with unrealized P&L (premium collected as max potential profit)
+              </CardDescription>
             </CardHeader>
             <CardContent>
-              {stats.totalTrades === 0 ? (
+              {openPositionsWithPnl.length === 0 ? (
                 <div className="text-center py-8">
-                  <Target className="h-12 w-12 text-muted-foreground mx-auto mb-2" />
-                  <p className="text-muted-foreground">No trade history yet</p>
+                  <Clock className="h-12 w-12 text-muted-foreground mx-auto mb-2" />
+                  <p className="text-muted-foreground">No open positions</p>
                   <p className="text-sm text-muted-foreground mt-1">
-                    Complete some trades to see strategy breakdown
+                    All positions have been closed
                   </p>
                 </div>
               ) : (
-                <div className="text-center py-8">
-                  <Target className="h-12 w-12 text-muted-foreground mx-auto mb-2" />
-                  <p className="text-muted-foreground">Strategy breakdown coming soon</p>
-                  <p className="text-sm text-muted-foreground mt-1">
-                    This feature is being developed
-                  </p>
+                <div className="rounded-md border">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Option</TableHead>
+                        <TableHead>Strategy</TableHead>
+                        <TableHead>Qty</TableHead>
+                        <TableHead className="text-right">Premium Collected</TableHead>
+                        <TableHead className="text-right">Unrealized P&L</TableHead>
+                        <TableHead>Open Date</TableHead>
+                        <TableHead>Expiry</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {openPositionsWithPnl.map((position) => (
+                        <TableRow key={position.id}>
+                          <TableCell className="font-medium">
+                            {position.symbol}
+                          </TableCell>
+                          <TableCell>
+                            <Badge variant="outline">{position.strategy}</Badge>
+                          </TableCell>
+                          <TableCell>{position.quantity}</TableCell>
+                          <TableCell className="text-right">
+                            {formatCurrencyPlain(position.premium_collected)}
+                          </TableCell>
+                          <TableCell className={cn(
+                            "text-right font-semibold",
+                            position.unrealized_pnl >= 0 ? 'text-green-500' : 'text-red-500'
+                          )}>
+                            {formatCurrency(position.unrealized_pnl)}
+                          </TableCell>
+                          <TableCell className="text-muted-foreground">
+                            {position.open_date}
+                          </TableCell>
+                          <TableCell className="text-muted-foreground">
+                            {position.expiry}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              )}
+
+              {/* Summary row */}
+              {openPositionsWithPnl.length > 0 && (
+                <div className="mt-4 pt-4 border-t flex justify-between items-center">
+                  <span className="text-sm text-muted-foreground">
+                    {openPositionsWithPnl.length} open positions
+                  </span>
+                  <div className="text-right">
+                    <span className="text-sm text-muted-foreground mr-2">Total Unrealized:</span>
+                    <span className={cn(
+                      "text-lg font-bold",
+                      stats.unrealizedPnl >= 0 ? 'text-green-500' : 'text-red-500'
+                    )}>
+                      {formatCurrency(stats.unrealizedPnl)}
+                    </span>
+                  </div>
                 </div>
               )}
             </CardContent>
