@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
   Table,
   TableBody,
@@ -27,9 +27,10 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Search, Plus, RefreshCw, TrendingUp, TrendingDown } from 'lucide-react';
+import { Search, Plus, RefreshCw, TrendingUp, TrendingDown, DollarSign, Clock, RotateCcw } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { usePortfolioStore } from '@/stores/portfolio-store';
+import { usePortfolioStore, AutoWheelAnalysis } from '@/stores/portfolio-store';
+import { AutoWheelCard, AutoWheelDetail } from '@/components/wheel';
 
 function formatCurrency(value: number) {
   return new Intl.NumberFormat('en-US', {
@@ -73,6 +74,8 @@ function getDteBadge(dte: number | undefined) {
 export default function PositionsPage() {
   const [searchTerm, setSearchTerm] = useState('');
   const [filter, setFilter] = useState('all');
+  const [selectedWheelAnalysis, setSelectedWheelAnalysis] = useState<AutoWheelAnalysis | null>(null);
+  const premiumTrackerRef = useRef<HTMLDivElement>(null);
 
   const {
     positions,
@@ -86,6 +89,9 @@ export default function PositionsPage() {
     fetchHoldings,
     fetchIBKRStatus,
     syncWithIBKR,
+    autoWheelAnalysis,
+    autoWheelSummary,
+    fetchAutoWheelAnalysis,
   } = usePortfolioStore();
 
   // Load data on mount
@@ -94,7 +100,13 @@ export default function PositionsPage() {
     fetchPositions();
     fetchClosedPositions();
     fetchHoldings();
-  }, [fetchIBKRStatus, fetchPositions, fetchClosedPositions, fetchHoldings]);
+    fetchAutoWheelAnalysis();
+  }, [fetchIBKRStatus, fetchPositions, fetchClosedPositions, fetchHoldings, fetchAutoWheelAnalysis]);
+
+  // Scroll to premium tracker section
+  const scrollToPremiumTracker = () => {
+    premiumTrackerRef.current?.scrollIntoView({ behavior: 'smooth' });
+  };
 
   const handleSync = async () => {
     const success = await syncWithIBKR();
@@ -176,6 +188,10 @@ export default function PositionsPage() {
           <TabsTrigger value="options">Options ({positions.length})</TabsTrigger>
           <TabsTrigger value="stocks">Stocks ({stockHoldings.length})</TabsTrigger>
           <TabsTrigger value="closed">Closed ({closedPositions.length})</TabsTrigger>
+          <TabsTrigger value="premium" onClick={scrollToPremiumTracker}>
+            <DollarSign className="h-4 w-4 mr-1" />
+            Premium Tracker ({autoWheelAnalysis.length})
+          </TabsTrigger>
         </TabsList>
 
         {/* Options Tab */}
@@ -424,6 +440,111 @@ export default function PositionsPage() {
               </Table>
             </CardContent>
           </Card>
+        </TabsContent>
+
+        {/* Premium Tracker Tab */}
+        <TabsContent value="premium" className="space-y-4" ref={premiumTrackerRef}>
+          {selectedWheelAnalysis ? (
+            <AutoWheelDetail
+              analysis={autoWheelAnalysis.find(a => a.id === selectedWheelAnalysis.id) || selectedWheelAnalysis}
+              onBack={() => setSelectedWheelAnalysis(null)}
+            />
+          ) : (
+            <>
+              {/* Summary Cards */}
+              <div className="grid gap-4 md:grid-cols-4">
+                <Card>
+                  <CardHeader className="flex flex-row items-center justify-between pb-2">
+                    <CardTitle className="text-sm font-medium text-muted-foreground">
+                      Underlyings Tracked
+                    </CardTitle>
+                    <RotateCcw className="h-4 w-4 text-muted-foreground" />
+                  </CardHeader>
+                  <CardContent>
+                    <div className="text-2xl font-bold">{autoWheelSummary.total_underlyings}</div>
+                    <p className="text-xs text-muted-foreground">
+                      {autoWheelSummary.collecting_premium_count} collecting, {autoWheelSummary.holding_shares_count} holding
+                    </p>
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardHeader className="flex flex-row items-center justify-between pb-2">
+                    <CardTitle className="text-sm font-medium text-muted-foreground">
+                      Total Premium Earned
+                    </CardTitle>
+                    <TrendingUp className="h-4 w-4 text-green-500" />
+                  </CardHeader>
+                  <CardContent>
+                    <div className="text-2xl font-bold text-green-500">
+                      {formatCurrency(autoWheelSummary.total_premium_collected)}
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      From closed positions
+                    </p>
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardHeader className="flex flex-row items-center justify-between pb-2">
+                    <CardTitle className="text-sm font-medium text-muted-foreground">
+                      Pending Premium
+                    </CardTitle>
+                    <Clock className="h-4 w-4 text-blue-500" />
+                  </CardHeader>
+                  <CardContent>
+                    <div className="text-2xl font-bold text-blue-500">
+                      {formatCurrency(autoWheelSummary.total_pending_premium)}
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      From open positions
+                    </p>
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardHeader className="flex flex-row items-center justify-between pb-2">
+                    <CardTitle className="text-sm font-medium text-muted-foreground">
+                      Avg Cost Reduction
+                    </CardTitle>
+                    <DollarSign className="h-4 w-4 text-green-500" />
+                  </CardHeader>
+                  <CardContent>
+                    <div className="text-2xl font-bold">
+                      {formatCurrency(autoWheelSummary.average_cost_reduction)}
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      Per holding with shares
+                    </p>
+                  </CardContent>
+                </Card>
+              </div>
+
+              {/* Premium Tracker Cards */}
+              {autoWheelAnalysis.length === 0 ? (
+                <Card className="border-dashed">
+                  <CardContent className="flex flex-col items-center justify-center py-12">
+                    <RotateCcw className="h-12 w-12 text-muted-foreground mb-4" />
+                    <h3 className="text-lg font-semibold mb-2">No Wheel Activity Yet</h3>
+                    <p className="text-muted-foreground text-center max-w-md">
+                      Once you have CSP or Covered Call positions synced from IBKR, they will automatically
+                      appear here with premium tracking and cost basis calculations.
+                    </p>
+                  </CardContent>
+                </Card>
+              ) : (
+                <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+                  {autoWheelAnalysis.map((analysis) => (
+                    <AutoWheelCard
+                      key={analysis.id}
+                      analysis={analysis}
+                      onSelect={setSelectedWheelAnalysis}
+                    />
+                  ))}
+                </div>
+              )}
+            </>
+          )}
         </TabsContent>
       </Tabs>
     </div>

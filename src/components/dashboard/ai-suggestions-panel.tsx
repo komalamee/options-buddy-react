@@ -3,7 +3,6 @@
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { ScrollArea } from '@/components/ui/scroll-area';
 import {
   TrendingUp,
   Wallet,
@@ -103,9 +102,8 @@ export function AISuggestionsPanel({
   onRemoveSuggestion,
 }: AISuggestionsPanelProps) {
   return (
-    <div className="h-full flex flex-col bg-card border rounded-lg overflow-hidden">
-      <ScrollArea className="flex-1">
-        <div className="p-4 space-y-4">
+    <div className="h-full bg-card border rounded-lg overflow-y-auto">
+      <div className="p-4 space-y-4">
           {/* Portfolio Context */}
           <Card className="border-dashed">
             <CardHeader className="pb-2 pt-3 px-3">
@@ -253,8 +251,7 @@ export function AISuggestionsPanel({
               ))}
             </div>
           )}
-        </div>
-      </ScrollArea>
+      </div>
     </div>
   );
 }

@@ -356,6 +356,7 @@ class IBKRService:
     def get_stock_price(self, symbol: str) -> Optional[float]:
         """Get current price for a stock."""
         if not self.is_connected:
+            logger.warning(f"get_stock_price: Not connected")
             return None
 
         _ensure_ib_insync_imported()
@@ -365,12 +366,24 @@ class IBKRService:
             self._ib.qualifyContracts(contract)
 
             ticker = self._ib.reqMktData(contract, '', False, False)
-            self._ib.sleep(2)
 
-            price = ticker.marketPrice()
+            # Wait for data with a short timeout loop
+            for _ in range(10):  # Max 5 seconds (10 * 0.5s)
+                self._ib.sleep(0.5)
+                price = ticker.marketPrice()
+                if not util.isNan(price):
+                    self._ib.cancelMktData(contract)
+                    return float(price)
+
+            # If still NaN after waiting, try last price
             self._ib.cancelMktData(contract)
+            if ticker.last and not util.isNan(ticker.last):
+                return float(ticker.last)
+            if ticker.close and not util.isNan(ticker.close):
+                return float(ticker.close)
 
-            return float(price) if not util.isNan(price) else None
+            logger.warning(f"No price data available for {symbol}")
+            return None
 
         except Exception as e:
             logger.error(f"Error getting price for {symbol}: {e}")
@@ -379,6 +392,7 @@ class IBKRService:
     def get_option_chain_expirations(self, symbol: str) -> List[str]:
         """Get available option expirations for a symbol."""
         if not self.is_connected:
+            logger.warning(f"get_option_chain_expirations: Not connected")
             return []
 
         _ensure_ib_insync_imported()
@@ -399,7 +413,6 @@ class IBKRService:
                 expirations.update(chain.expirations)
 
             return sorted(list(expirations))
-
         except Exception as e:
             logger.error(f"Error getting expirations for {symbol}: {e}")
             return []
@@ -407,6 +420,7 @@ class IBKRService:
     def get_option_chain_strikes(self, symbol: str, expiry: str) -> List[float]:
         """Get available strikes for a symbol and expiry."""
         if not self.is_connected:
+            logger.warning(f"get_option_chain_strikes: Not connected")
             return []
 
         _ensure_ib_insync_imported()
@@ -428,7 +442,6 @@ class IBKRService:
                     strikes.update(chain.strikes)
 
             return sorted([float(s) for s in strikes])
-
         except Exception as e:
             logger.error(f"Error getting strikes for {symbol} {expiry}: {e}")
             return []
@@ -442,6 +455,7 @@ class IBKRService:
     ) -> Optional[dict]:
         """Get data for a specific option contract."""
         if not self.is_connected:
+            logger.warning(f"get_option_data: Not connected")
             return None
 
         _ensure_ib_insync_imported()
@@ -459,7 +473,12 @@ class IBKRService:
             self._ib.qualifyContracts(contract)
 
             ticker = self._ib.reqMktData(contract, '', False, False)
-            self._ib.sleep(2)
+
+            # Wait for data - reduced timeout (max 1 second)
+            for _ in range(2):
+                self._ib.sleep(0.5)
+                if ticker.bid and not util.isNan(ticker.bid):
+                    break
 
             result = {
                 'symbol': symbol,
@@ -469,8 +488,8 @@ class IBKRService:
                 'bid': float(ticker.bid) if ticker.bid and not util.isNan(ticker.bid) else None,
                 'ask': float(ticker.ask) if ticker.ask and not util.isNan(ticker.ask) else None,
                 'last': float(ticker.last) if ticker.last and not util.isNan(ticker.last) else None,
-                'volume': int(ticker.volume) if ticker.volume and not util.isNan(ticker.volume) else None,
-                'open_interest': int(ticker.openInterest) if ticker.openInterest else None
+                'volume': int(ticker.volume) if ticker.volume and not util.isNan(ticker.volume) else 0,
+                'open_interest': 0  # Open interest requires separate request
             }
 
             # Get Greeks if available
@@ -486,10 +505,89 @@ class IBKRService:
             self._ib.cancelMktData(contract)
 
             return result
-
         except Exception as e:
-            logger.error(f"Error getting option data: {e}")
+            logger.error(f"Error getting option data for {symbol}: {e}")
             return None
+
+    def get_option_chain_bulk(
+        self,
+        symbol: str,
+        expiry: str,
+        strikes: List[float]
+    ) -> List[dict]:
+        """Get option data for multiple strikes at once (more efficient)."""
+        if not self.is_connected:
+            logger.warning(f"get_option_chain_bulk: Not connected")
+            return []
+
+        _ensure_ib_insync_imported()
+
+        results = []
+        tickers = []
+        contracts = []
+
+        try:
+            # Create all contracts first
+            for strike in strikes:
+                for right in ['C', 'P']:
+                    contract = Option(
+                        symbol=symbol.upper(),
+                        lastTradeDateOrContractMonth=expiry,
+                        strike=strike,
+                        right=right,
+                        exchange='SMART',
+                        currency='USD'
+                    )
+                    contracts.append((contract, strike, right))
+
+            # Qualify all contracts
+            contract_list = [c[0] for c in contracts]
+            self._ib.qualifyContracts(*contract_list)
+
+            # Request market data for all at once
+            for contract, strike, right in contracts:
+                ticker = self._ib.reqMktData(contract, '', False, False)
+                tickers.append((ticker, contract, strike, right))
+
+            # Wait for data to arrive (single wait for all)
+            self._ib.sleep(1.5)
+
+            # Collect results
+            for ticker, contract, strike, right in tickers:
+                result = {
+                    'symbol': symbol,
+                    'expiry': expiry,
+                    'strike': strike,
+                    'right': right,
+                    'bid': float(ticker.bid) if ticker.bid and not util.isNan(ticker.bid) else None,
+                    'ask': float(ticker.ask) if ticker.ask and not util.isNan(ticker.ask) else None,
+                    'last': float(ticker.last) if ticker.last and not util.isNan(ticker.last) else None,
+                    'volume': int(ticker.volume) if ticker.volume and not util.isNan(ticker.volume) else 0,
+                    'open_interest': 0
+                }
+
+                if ticker.modelGreeks:
+                    result.update({
+                        'iv': float(ticker.modelGreeks.impliedVol) if ticker.modelGreeks.impliedVol else None,
+                        'delta': float(ticker.modelGreeks.delta) if ticker.modelGreeks.delta else None,
+                        'gamma': float(ticker.modelGreeks.gamma) if ticker.modelGreeks.gamma else None,
+                        'theta': float(ticker.modelGreeks.theta) if ticker.modelGreeks.theta else None,
+                        'vega': float(ticker.modelGreeks.vega) if ticker.modelGreeks.vega else None
+                    })
+
+                results.append(result)
+                self._ib.cancelMktData(contract)
+
+            return results
+        except Exception as e:
+            logger.error(f"Error getting bulk option data for {symbol}: {e}")
+            # Cancel any pending market data
+            for ticker, contract, _, _ in tickers:
+                try:
+                    self._ib.cancelMktData(contract)
+                except:
+                    pass
+            return []
 
 
 # Convenience function

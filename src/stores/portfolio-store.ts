@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { api, ConnectionStatus, PortfolioSummary as ApiPortfolioSummary, PerformanceStats } from '@/lib/api';
+import { api, ConnectionStatus, PortfolioSummary as ApiPortfolioSummary, PerformanceStats, WheelChain, AutoWheelAnalysis, AutoWheelSummary } from '@/lib/api';
 
 // ==================== Types ====================
 
@@ -60,6 +60,17 @@ export interface PortfolioSummary {
   ccLotsAvailable: number;
 }
 
+export interface WheelChainSummary {
+  totalChains: number;
+  activeChains: number;
+  holdingSharesChains: number;
+  totalPremiumCollected: number;
+  averageCostBasisReduction: number;
+}
+
+// Re-export types from api.ts for convenience
+export type { WheelChain, AutoWheelAnalysis, AutoWheelSummary } from '@/lib/api';
+
 // ==================== Store Interface ====================
 
 interface PortfolioState {
@@ -71,6 +82,16 @@ interface PortfolioState {
   alerts: Alert[];
   ibkrStatus: IBKRStatus;
   performance: PerformanceStats | null;
+
+  // Wheel chains (manual - legacy)
+  wheelChains: WheelChain[];
+  wheelChainSummary: WheelChainSummary;
+  selectedChainId: string | null;
+
+  // Auto wheel analysis (automatic - no manual linking required)
+  autoWheelAnalysis: AutoWheelAnalysis[];
+  autoWheelSummary: AutoWheelSummary;
+  selectedAutoWheelSymbol: string | null;
 
   // Loading states
   isLoading: boolean;
@@ -99,6 +120,23 @@ interface PortfolioState {
   fetchAll: () => Promise<void>;
   syncWithIBKR: (account?: string) => Promise<boolean>;
   generateAlerts: () => void;
+
+  // Wheel chain actions (manual - legacy)
+  fetchWheelChains: () => Promise<void>;
+  createWheelChain: (underlying: string) => Promise<WheelChain | null>;
+  deleteWheelChain: (chainId: string) => Promise<boolean>;
+  linkPositionToChain: (positionId: number, chainId: string) => Promise<boolean>;
+  unlinkPositionFromChain: (positionId: number) => Promise<boolean>;
+  recordAssignment: (chainId: string, strike: number, shares?: number) => Promise<WheelChain | null>;
+  recordChainExit: (chainId: string, exitPrice: number, exitType: 'CALLED_AWAY' | 'SOLD') => Promise<WheelChain | null>;
+  setSelectedChainId: (chainId: string | null) => void;
+  getChainById: (chainId: string) => WheelChain | undefined;
+  getActiveChainForUnderlying: (symbol: string) => WheelChain | undefined;
+
+  // Auto wheel analysis actions (automatic - no manual linking)
+  fetchAutoWheelAnalysis: () => Promise<void>;
+  setSelectedAutoWheelSymbol: (symbol: string | null) => void;
+  getAutoWheelBySymbol: (symbol: string) => AutoWheelAnalysis | undefined;
 }
 
 // ==================== Default Values ====================
@@ -115,6 +153,23 @@ const defaultSummary: PortfolioSummary = {
   ccLotsAvailable: 0,
 };
 
+const defaultWheelChainSummary: WheelChainSummary = {
+  totalChains: 0,
+  activeChains: 0,
+  holdingSharesChains: 0,
+  totalPremiumCollected: 0,
+  averageCostBasisReduction: 0,
+};
+
+const defaultAutoWheelSummary: AutoWheelSummary = {
+  total_underlyings: 0,
+  holding_shares_count: 0,
+  collecting_premium_count: 0,
+  total_premium_collected: 0,
+  total_pending_premium: 0,
+  average_cost_reduction: 0,
+};
+
 // ==================== Store ====================
 
 export const usePortfolioStore = create<PortfolioState>((set, get) => ({
@@ -125,6 +180,12 @@ export const usePortfolioStore = create<PortfolioState>((set, get) => ({
   alerts: [],
   ibkrStatus: { connected: false },
   performance: null,
+  wheelChains: [],
+  wheelChainSummary: defaultWheelChainSummary,
+  selectedChainId: null,
+  autoWheelAnalysis: [],
+  autoWheelSummary: defaultAutoWheelSummary,
+  selectedAutoWheelSymbol: null,
   isLoading: false,
   isSyncing: false,
   error: null,
@@ -350,5 +411,155 @@ export const usePortfolioStore = create<PortfolioState>((set, get) => ({
     }
 
     set({ alerts });
+  },
+
+  // ==================== Wheel Chains ====================
+
+  fetchWheelChains: async () => {
+    try {
+      const { chains } = await api.getWheelChains();
+
+      // Calculate summary statistics
+      const activeChains = chains.filter(c => c.status === 'COLLECTING_PREMIUM').length;
+      const holdingSharesChains = chains.filter(c => c.status === 'HOLDING_SHARES').length;
+      const totalPremiumCollected = chains.reduce((sum, c) =>
+        sum + c.total_put_premium + c.total_call_premium, 0);
+
+      // Calculate average cost basis reduction for chains holding shares
+      const holdingChains = chains.filter(c => c.status === 'HOLDING_SHARES' && c.assignment_cost && c.effective_cost_basis);
+      const averageCostBasisReduction = holdingChains.length > 0
+        ? holdingChains.reduce((sum, c) => sum + ((c.assignment_cost || 0) - (c.effective_cost_basis || 0)), 0) / holdingChains.length
+        : 0;
+
+      set({
+        wheelChains: chains,
+        wheelChainSummary: {
+          totalChains: chains.length,
+          activeChains,
+          holdingSharesChains,
+          totalPremiumCollected,
+          averageCostBasisReduction,
+        },
+      });
+    } catch (error) {
+      console.error('Failed to fetch wheel chains:', error);
+    }
+  },
+
+  createWheelChain: async (underlying: string) => {
+    try {
+      const { chain } = await api.createWheelChain(underlying);
+      await get().fetchWheelChains();
+      return chain;
+    } catch (error) {
+      console.error('Failed to create wheel chain:', error);
+      set({ error: error instanceof Error ? error.message : 'Failed to create wheel chain' });
+      return null;
+    }
+  },
+
+  deleteWheelChain: async (chainId: string) => {
+    try {
+      await api.deleteWheelChain(chainId);
+      await get().fetchWheelChains();
+      return true;
+    } catch (error) {
+      console.error('Failed to delete wheel chain:', error);
+      set({ error: error instanceof Error ? error.message : 'Failed to delete wheel chain' });
+      return false;
+    }
+  },
+
+  linkPositionToChain: async (positionId: number, chainId: string) => {
+    try {
+      await api.linkPositionToChain(positionId, chainId);
+      await get().fetchWheelChains();
+      return true;
+    } catch (error) {
+      console.error('Failed to link position to chain:', error);
+      set({ error: error instanceof Error ? error.message : 'Failed to link position' });
+      return false;
+    }
+  },
+
+  unlinkPositionFromChain: async (positionId: number) => {
+    try {
+      await api.unlinkPositionFromChain(positionId);
+      await get().fetchWheelChains();
+      return true;
+    } catch (error) {
+      console.error('Failed to unlink position from chain:', error);
+      set({ error: error instanceof Error ? error.message : 'Failed to unlink position' });
+      return false;
+    }
+  },
+
+  recordAssignment: async (chainId: string, strike: number, shares: number = 100) => {
+    try {
+      const { chain } = await api.recordChainAssignment(chainId, strike, shares);
+      await Promise.all([
+        get().fetchWheelChains(),
+        get().fetchHoldings(),
+      ]);
+      return chain;
+    } catch (error) {
+      console.error('Failed to record assignment:', error);
+      set({ error: error instanceof Error ? error.message : 'Failed to record assignment' });
+      return null;
+    }
+  },
+
+  recordChainExit: async (chainId: string, exitPrice: number, exitType: 'CALLED_AWAY' | 'SOLD') => {
+    try {
+      const { chain } = await api.recordChainExit(chainId, exitPrice, exitType);
+      await Promise.all([
+        get().fetchWheelChains(),
+        get().fetchHoldings(),
+      ]);
+      return chain;
+    } catch (error) {
+      console.error('Failed to record chain exit:', error);
+      set({ error: error instanceof Error ? error.message : 'Failed to record exit' });
+      return null;
+    }
+  },
+
+  setSelectedChainId: (chainId: string | null) => {
+    set({ selectedChainId: chainId });
+  },
+
+  getChainById: (chainId: string) => {
+    return get().wheelChains.find(c => c.id === chainId);
+  },
+
+  getActiveChainForUnderlying: (symbol: string) => {
+    return get().wheelChains.find(
+      c => c.underlying.toUpperCase() === symbol.toUpperCase() && c.status !== 'CLOSED'
+    );
+  },
+
+  // ==================== Auto Wheel Analysis ====================
+  // Automatic analysis - no manual linking required
+
+  fetchAutoWheelAnalysis: async () => {
+    try {
+      const { analysis, summary } = await api.getAutoWheelAnalysis();
+      set({
+        autoWheelAnalysis: analysis,
+        autoWheelSummary: summary,
+      });
+    } catch (error) {
+      console.error('Failed to fetch auto wheel analysis:', error);
+    }
+  },
+
+  setSelectedAutoWheelSymbol: (symbol: string | null) => {
+    set({ selectedAutoWheelSymbol: symbol });
+  },
+
+  getAutoWheelBySymbol: (symbol: string) => {
+    return get().autoWheelAnalysis.find(
+      a => a.underlying.toUpperCase() === symbol.toUpperCase()
+    );
   },
 }));

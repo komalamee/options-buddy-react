@@ -177,25 +177,34 @@ export default function ScannerPage() {
           (s) => s >= minStrike && s <= maxStrike
         );
 
-        // Fetch call and put data for each strike in parallel
-        const rows: OptionsChainRow[] = await Promise.all(
-          relevantStrikes.map(async (strike) => {
-            const [callData, putData] = await Promise.all([
-              api.getOptionData(symbol, expiry, strike, 'C').catch(() => null),
-              api.getOptionData(symbol, expiry, strike, 'P').catch(() => null),
-            ]);
+        // Use bulk API to fetch all option data at once (much faster)
+        const bulkResult = await api.getOptionChainBulk(symbol, expiry, relevantStrikes);
 
-            return {
-              strike,
-              isItm: {
-                call: strike < stockPrice,
-                put: strike > stockPrice,
-              },
-              call: callData ? mapOptionData(callData) : null,
-              put: putData ? mapOptionData(putData) : null,
-            };
-          })
-        );
+        // Group results by strike
+        const strikeMap = new Map<number, { call: any; put: any }>();
+        for (const opt of bulkResult.options) {
+          const existing = strikeMap.get(opt.strike) || { call: null, put: null };
+          if (opt.right === 'C') {
+            existing.call = opt;
+          } else {
+            existing.put = opt;
+          }
+          strikeMap.set(opt.strike, existing);
+        }
+
+        // Build rows
+        const rows: OptionsChainRow[] = relevantStrikes.map((strike) => {
+          const data = strikeMap.get(strike) || { call: null, put: null };
+          return {
+            strike,
+            isItm: {
+              call: strike < stockPrice,
+              put: strike > stockPrice,
+            },
+            call: data.call ? mapOptionData(data.call) : null,
+            put: data.put ? mapOptionData(data.put) : null,
+          };
+        });
 
         // Sort by strike price
         rows.sort((a, b) => a.strike - b.strike);

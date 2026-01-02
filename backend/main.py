@@ -1,14 +1,17 @@
 """FastAPI backend for Options Buddy React app."""
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional, List, Dict, Tuple
 from datetime import datetime, date, time
 import pytz
 import logging
 import httpx
 import json
+import csv
+import io
+import re
 
 from config import settings
 from database import (
@@ -16,6 +19,7 @@ from database import (
     get_closed_positions,
     get_position_by_id,
     create_position,
+    create_closed_position,
     close_position,
     update_position,
     get_stock_holdings,
@@ -29,7 +33,24 @@ from database import (
     get_setting,
     set_setting,
     get_all_settings,
-    init_db
+    init_db,
+    # Wheel chain functions (manual)
+    get_all_wheel_chains,
+    get_wheel_chain_by_id,
+    get_wheel_chains_by_underlying,
+    get_active_chain_for_underlying,
+    create_wheel_chain as db_create_wheel_chain,
+    update_wheel_chain,
+    delete_wheel_chain,
+    link_position_to_chain,
+    unlink_position_from_chain,
+    add_premium_to_chain,
+    record_chain_assignment,
+    record_chain_exit,
+    get_positions_for_chain,
+    # Auto wheel analysis functions
+    get_auto_wheel_analysis,
+    get_auto_wheel_summary
 )
 from ibkr_service import get_ibkr_service
 
@@ -140,6 +161,24 @@ class ChatMessage(BaseModel):
 
 class ChatRequest(BaseModel):
     messages: List[ChatMessage]
+
+
+# ==================== WHEEL CHAIN MODELS ====================
+
+class WheelChainCreate(BaseModel):
+    underlying: str
+
+
+class WheelChainAssignment(BaseModel):
+    strike: float
+    shares: int = 100
+    assignment_date: Optional[str] = None
+
+
+class WheelChainExit(BaseModel):
+    exit_price: float
+    exit_type: str  # CALLED_AWAY or SOLD
+    exit_date: Optional[str] = None
 
 
 # System prompt for the AI advisor - NOT user configurable
@@ -679,6 +718,23 @@ def get_option_data(
     return data
 
 
+class BulkOptionRequest(BaseModel):
+    symbol: str
+    expiry: str
+    strikes: List[float]
+
+
+@app.post("/api/market/options/chain")
+def get_option_chain_bulk(request: BulkOptionRequest):
+    """Get option data for multiple strikes at once (more efficient)."""
+    ibkr = get_ibkr_service()
+    if not ibkr.is_connected:
+        raise HTTPException(status_code=400, detail="Not connected to IBKR")
+
+    data = ibkr.get_option_chain_bulk(request.symbol, request.expiry, request.strikes)
+    return {"options": data}
+
+
 # ==================== SCANNER ====================
 
 @app.post("/api/scanner/scan")
@@ -853,6 +909,194 @@ def get_portfolio_summary():
         "win_rate": stats.get('win_rate', 0),
         "total_trades": stats.get('total_trades', 0)
     }
+
+
+# ==================== WHEEL CHAINS ====================
+
+@app.get("/api/wheel-chains")
+def list_wheel_chains():
+    """Get all wheel chains with linked positions."""
+    chains = get_all_wheel_chains()
+    return {"chains": chains}
+
+
+@app.post("/api/wheel-chains")
+def create_wheel_chain_endpoint(data: WheelChainCreate):
+    """Create a new wheel chain."""
+    chain_id = db_create_wheel_chain(data.underlying)
+    chain = get_wheel_chain_by_id(chain_id)
+    return {"id": chain_id, "chain": chain, "message": "Wheel chain created"}
+
+
+@app.get("/api/wheel-chains/{chain_id}")
+def get_wheel_chain(chain_id: str):
+    """Get a single wheel chain by ID with all linked positions."""
+    chain = get_wheel_chain_by_id(chain_id)
+    if not chain:
+        raise HTTPException(status_code=404, detail="Wheel chain not found")
+    return chain
+
+
+@app.delete("/api/wheel-chains/{chain_id}")
+def delete_wheel_chain_endpoint(chain_id: str):
+    """Delete a wheel chain and unlink all positions."""
+    success = delete_wheel_chain(chain_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Wheel chain not found")
+    return {"message": "Wheel chain deleted"}
+
+
+@app.get("/api/wheel-chains/by-underlying/{symbol}")
+def get_chains_by_underlying(symbol: str):
+    """Get all wheel chains for a specific underlying."""
+    chains = get_wheel_chains_by_underlying(symbol)
+    return {"chains": chains}
+
+
+@app.get("/api/wheel-chains/active/{symbol}")
+def get_active_chain(symbol: str):
+    """Get the active (non-closed) wheel chain for a specific underlying."""
+    chain = get_active_chain_for_underlying(symbol)
+    if not chain:
+        return {"chain": None}
+    return {"chain": chain}
+
+
+@app.post("/api/wheel-chains/{chain_id}/assignment")
+def record_assignment(chain_id: str, data: WheelChainAssignment):
+    """Record an assignment event on a wheel chain."""
+    chain = get_wheel_chain_by_id(chain_id)
+    if not chain:
+        raise HTTPException(status_code=404, detail="Wheel chain not found")
+
+    if chain['status'] != 'COLLECTING_PREMIUM':
+        raise HTTPException(status_code=400, detail="Chain is not in COLLECTING_PREMIUM status")
+
+    success = record_chain_assignment(
+        chain_id=chain_id,
+        strike=data.strike,
+        shares=data.shares,
+        assignment_date=data.assignment_date
+    )
+
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to record assignment")
+
+    updated_chain = get_wheel_chain_by_id(chain_id)
+    return {"message": "Assignment recorded", "chain": updated_chain}
+
+
+@app.post("/api/wheel-chains/{chain_id}/exit")
+def record_exit(chain_id: str, data: WheelChainExit):
+    """Record an exit event (shares called away or sold) on a wheel chain."""
+    chain = get_wheel_chain_by_id(chain_id)
+    if not chain:
+        raise HTTPException(status_code=404, detail="Wheel chain not found")
+
+    if chain['status'] != 'HOLDING_SHARES':
+        raise HTTPException(status_code=400, detail="Chain is not in HOLDING_SHARES status")
+
+    if data.exit_type not in ('CALLED_AWAY', 'SOLD'):
+        raise HTTPException(status_code=400, detail="exit_type must be CALLED_AWAY or SOLD")
+
+    success = record_chain_exit(
+        chain_id=chain_id,
+        exit_price=data.exit_price,
+        exit_type=data.exit_type,
+        exit_date=data.exit_date
+    )
+
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to record exit")
+
+    updated_chain = get_wheel_chain_by_id(chain_id)
+    return {"message": "Exit recorded", "chain": updated_chain}
+
+
+@app.post("/api/positions/{position_id}/link-chain/{chain_id}")
+def link_position_to_chain_endpoint(position_id: int, chain_id: str):
+    """Link a position to a wheel chain."""
+    chain = get_wheel_chain_by_id(chain_id)
+    if not chain:
+        raise HTTPException(status_code=404, detail="Wheel chain not found")
+
+    position = get_position_by_id(position_id)
+    if not position:
+        raise HTTPException(status_code=404, detail="Position not found")
+
+    # Verify position underlying matches chain underlying
+    if position['underlying'].upper() != chain['underlying'].upper():
+        raise HTTPException(
+            status_code=400,
+            detail=f"Position underlying ({position['underlying']}) doesn't match chain underlying ({chain['underlying']})"
+        )
+
+    success = link_position_to_chain(position_id, chain_id)
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to link position to chain")
+
+    return {"message": "Position linked to chain"}
+
+
+@app.post("/api/positions/{position_id}/unlink-chain")
+def unlink_position_from_chain_endpoint(position_id: int):
+    """Unlink a position from its wheel chain."""
+    position = get_position_by_id(position_id)
+    if not position:
+        raise HTTPException(status_code=404, detail="Position not found")
+
+    if not position.get('wheel_chain_id'):
+        raise HTTPException(status_code=400, detail="Position is not linked to a chain")
+
+    success = unlink_position_from_chain(position_id)
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to unlink position from chain")
+
+    return {"message": "Position unlinked from chain"}
+
+
+# ==================== AUTO WHEEL ANALYSIS ====================
+# These endpoints automatically analyze historical positions to calculate
+# premium accumulation per underlying - NO manual linking required
+
+@app.get("/api/wheel/analysis")
+def get_wheel_analysis():
+    """
+    Get auto-calculated wheel analysis for all underlyings.
+
+    This automatically:
+    - Groups all CSP/CC positions by underlying
+    - Calculates total premium earned (closed positions)
+    - Calculates pending premium (open positions)
+    - Adjusts cost basis if shares are held
+    - Returns all data - no manual linking required
+    """
+    analysis = get_auto_wheel_analysis()
+    summary = get_auto_wheel_summary()
+    return {
+        "analysis": analysis,
+        "summary": summary
+    }
+
+
+@app.get("/api/wheel/analysis/{symbol}")
+def get_wheel_analysis_for_symbol(symbol: str):
+    """Get auto-calculated wheel analysis for a specific symbol."""
+    all_analysis = get_auto_wheel_analysis()
+
+    # Find the analysis for this symbol
+    symbol_upper = symbol.upper()
+    for entry in all_analysis:
+        if entry['underlying'] == symbol_upper:
+            return entry
+
+    raise HTTPException(status_code=404, detail=f"No wheel data found for {symbol}")
+
+
+@app.get("/api/wheel/summary")
+def get_wheel_summary():
+    """Get summary statistics for all wheel activity."""
+    return get_auto_wheel_summary()
 
 
 # ==================== APP SETTINGS ====================
@@ -1198,6 +1442,193 @@ async def chat(request: ChatRequest):
     except Exception as e:
         logger.error(f"Chat error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ==================== CSV IMPORT ====================
+
+def parse_ibkr_option_symbol(symbol: str) -> Tuple[str, str, float, str]:
+    """
+    Parse IBKR option symbol format: "TSLA 17OCT25 410 P"
+    Returns: (underlying, expiry_date, strike, option_type)
+    """
+    parts = symbol.strip().split()
+    if len(parts) < 4:
+        raise ValueError(f"Invalid option symbol format: {symbol}")
+
+    underlying = parts[0]  # TSLA
+    expiry_str = parts[1]  # 17OCT25
+    strike = float(parts[2])  # 410
+    option_type = "PUT" if parts[3] == "P" else "CALL"
+
+    # Parse expiry: 17OCT25 → 2025-10-17
+    month_map = {
+        "JAN": 1, "FEB": 2, "MAR": 3, "APR": 4, "MAY": 5, "JUN": 6,
+        "JUL": 7, "AUG": 8, "SEP": 9, "OCT": 10, "NOV": 11, "DEC": 12
+    }
+
+    day = int(expiry_str[:2])
+    month_str = expiry_str[2:5].upper()
+    year = 2000 + int(expiry_str[5:7])
+
+    if month_str not in month_map:
+        raise ValueError(f"Invalid month in expiry: {expiry_str}")
+
+    month = month_map[month_str]
+    expiry_date = f"{year}-{month:02d}-{day:02d}"
+
+    return underlying, expiry_date, strike, option_type
+
+
+def parse_ibkr_datetime(datetime_str: str) -> str:
+    """
+    Parse IBKR datetime format: "2025-10-10, 12:38:13" → "2025-10-10"
+    """
+    # Extract just the date part
+    date_part = datetime_str.split(",")[0].strip()
+    return date_part
+
+
+@app.post("/api/import/ibkr-trades")
+async def import_ibkr_trades(file: UploadFile = File(...)):
+    """
+    Import historical trades from IBKR Activity Statement CSV.
+
+    Parses the CSV, finds option trades in the "Trades" section,
+    matches opening trades with closing trades, and creates
+    closed position records.
+    """
+    if not file.filename.endswith('.csv'):
+        raise HTTPException(status_code=400, detail="File must be a CSV")
+
+    try:
+        content = await file.read()
+        text = content.decode('utf-8')
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Could not read file: {e}")
+
+    # Parse CSV
+    reader = csv.reader(io.StringIO(text))
+    rows = list(reader)
+
+    # Find option trades
+    # Format: Trades,Data,Order,Equity and Index Options,USD,Account,Symbol,DateTime,Qty,...,Code
+    option_trades = []
+    for row in rows:
+        if len(row) < 17:
+            continue
+        if row[0] == "Trades" and row[1] == "Data" and row[3] == "Equity and Index Options":
+            try:
+                trade = {
+                    'symbol': row[6],
+                    'datetime': row[7],
+                    'quantity': int(row[8]),
+                    'trade_price': float(row[9]),
+                    'proceeds': float(row[11]) if row[11] else 0,
+                    'commission': float(row[12]) if row[12] else 0,
+                    'code': row[16] if len(row) > 16 else ''
+                }
+                option_trades.append(trade)
+            except (ValueError, IndexError) as e:
+                logger.warning(f"Could not parse trade row: {row}, error: {e}")
+                continue
+
+    if not option_trades:
+        raise HTTPException(
+            status_code=400,
+            detail="No option trades found in CSV. Make sure this is an IBKR Activity Statement."
+        )
+
+    # Group trades by symbol and match opens with closes
+    trades_by_symbol: Dict[str, List[dict]] = {}
+    for trade in option_trades:
+        symbol = trade['symbol']
+        if symbol not in trades_by_symbol:
+            trades_by_symbol[symbol] = []
+        trades_by_symbol[symbol].append(trade)
+
+    # Process each symbol's trades
+    imported = 0
+    skipped = 0
+    errors = []
+
+    for symbol, trades in trades_by_symbol.items():
+        # Sort by datetime
+        trades.sort(key=lambda t: t['datetime'])
+
+        # Separate opens (O) and closes (C, Ep)
+        opens = [t for t in trades if t['code'] == 'O']
+        closes = [t for t in trades if t['code'] in ('C', 'Ep')]
+
+        # Match opens with closes (simple FIFO matching)
+        for open_trade in opens:
+            # Find a matching close (same quantity, opposite sign)
+            matching_close = None
+            for close_trade in closes:
+                if close_trade['quantity'] == -open_trade['quantity']:
+                    matching_close = close_trade
+                    closes.remove(close_trade)
+                    break
+
+            if not matching_close:
+                # No matching close found - could be open position, skip
+                skipped += 1
+                continue
+
+            try:
+                # Parse the symbol
+                underlying, expiry, strike, option_type = parse_ibkr_option_symbol(symbol)
+                open_date = parse_ibkr_datetime(open_trade['datetime'])
+                close_date = parse_ibkr_datetime(matching_close['datetime'])
+
+                # Calculate premium and close price
+                # Open trade: quantity is negative for sell, price is per share
+                premium_per_share = open_trade['trade_price']
+                close_price = matching_close['trade_price'] if matching_close['code'] == 'C' else 0
+
+                # Determine status
+                status = 'EXPIRED' if matching_close['code'] == 'Ep' else 'CLOSED'
+
+                # Determine strategy (CSP for puts, assume naked for calls unless we know holdings)
+                strategy_type = 'CSP' if option_type == 'PUT' else 'NAKED'
+
+                # Calculate realized P/L for notes
+                # P/L = (open proceeds + close proceeds) - total commission
+                total_proceeds = open_trade['proceeds'] + matching_close['proceeds']
+                total_commission = abs(open_trade['commission']) + abs(matching_close['commission'])
+                realized_pnl = total_proceeds - total_commission
+
+                notes = f"Imported from IBKR CSV. P/L: ${realized_pnl:.2f}"
+
+                # Create the closed position
+                position_id = create_closed_position(
+                    underlying=underlying,
+                    option_type=option_type,
+                    strike=strike,
+                    expiry=expiry,
+                    quantity=abs(open_trade['quantity']),
+                    premium_collected=premium_per_share,
+                    strategy_type=strategy_type,
+                    open_date=open_date,
+                    close_date=close_date,
+                    close_price=close_price,
+                    status=status,
+                    notes=notes
+                )
+
+                imported += 1
+                logger.info(f"Imported: {underlying} ${strike} {option_type} {expiry} - {status}")
+
+            except Exception as e:
+                errors.append(f"{symbol}: {str(e)}")
+                logger.error(f"Error importing {symbol}: {e}")
+
+    return {
+        "success": True,
+        "imported": imported,
+        "skipped": skipped,
+        "errors": errors,
+        "message": f"Successfully imported {imported} closed trades. Skipped {skipped} (likely still open)."
+    }
 
 
 # ==================== RUN SERVER ====================

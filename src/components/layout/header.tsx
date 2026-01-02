@@ -12,6 +12,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { usePortfolioStore } from '@/stores/portfolio-store';
+import { UserMenu } from './user-menu';
 
 export function Header() {
   const { setTheme, theme } = useTheme();
@@ -69,6 +70,9 @@ export function Header() {
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
+
+        {/* User menu with logout */}
+        <UserMenu />
       </div>
     </header>
   );

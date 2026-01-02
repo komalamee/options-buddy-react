@@ -91,6 +91,70 @@ export interface PerformanceStats {
   profit_factor: number;
 }
 
+export interface WheelChain {
+  id: string;
+  underlying: string;
+  status: 'COLLECTING_PREMIUM' | 'HOLDING_SHARES' | 'CLOSED';
+  assignment_strike: number | null;
+  assignment_date: string | null;
+  shares_acquired: number | null;
+  total_put_premium: number;
+  total_call_premium: number;
+  assignment_cost: number | null;
+  net_cost_basis: number | null;
+  effective_cost_basis: number | null;
+  break_even_price: number | null;
+  exit_date: string | null;
+  exit_price: number | null;
+  exit_type: 'CALLED_AWAY' | 'SOLD' | null;
+  realized_pnl: number | null;
+  positions: Position[];
+  days_in_chain: number;
+  created_at: string;
+  updated_at: string;
+}
+
+// Auto-detected wheel analysis (no manual linking required)
+export interface AutoWheelAnalysis {
+  id: string;
+  underlying: string;
+  status: 'COLLECTING_PREMIUM' | 'HOLDING_SHARES' | 'CLOSED';
+  total_put_premium: number;
+  total_call_premium: number;
+  total_premium: number;
+  pending_put_premium: number;
+  pending_call_premium: number;
+  pending_premium: number;
+  assignment_cost: number | null;
+  net_cost_basis: number | null;
+  effective_cost_basis: number | null;
+  break_even_price: number | null;
+  shares_held: number;
+  avg_cost: number | null;
+  current_price: number | null;
+  unrealized_pnl: number | null;
+  positions: Position[];
+  open_positions: Position[];
+  closed_positions: Position[];
+  assigned_positions: Position[];
+  put_count: number;
+  call_count: number;
+  open_put_count: number;
+  open_call_count: number;
+  first_position_date: string | null;
+  last_activity_date: string | null;
+  days_active: number;
+}
+
+export interface AutoWheelSummary {
+  total_underlyings: number;
+  holding_shares_count: number;
+  collecting_premium_count: number;
+  total_premium_collected: number;
+  total_pending_premium: number;
+  average_cost_reduction: number;
+}
+
 // ==================== API Client ====================
 
 class ApiClient {
@@ -312,6 +376,34 @@ class ApiClient {
     );
   }
 
+  async getOptionChainBulk(
+    symbol: string,
+    expiry: string,
+    strikes: number[]
+  ): Promise<{
+    options: Array<{
+      symbol: string;
+      expiry: string;
+      strike: number;
+      right: string;
+      bid?: number;
+      ask?: number;
+      last?: number;
+      volume?: number;
+      open_interest?: number;
+      iv?: number;
+      delta?: number;
+      gamma?: number;
+      theta?: number;
+      vega?: number;
+    }>;
+  }> {
+    return this.request('/api/market/options/chain', {
+      method: 'POST',
+      body: JSON.stringify({ symbol, expiry, strikes }),
+    });
+  }
+
   // ==================== Scanner ====================
 
   async runScan(request: {
@@ -382,6 +474,112 @@ class ApiClient {
       method: 'POST',
       body: JSON.stringify({ messages }),
     });
+  }
+
+  // ==================== Wheel Chains ====================
+
+  async getWheelChains(): Promise<{ chains: WheelChain[] }> {
+    return this.request('/api/wheel-chains');
+  }
+
+  async getWheelChain(chainId: string): Promise<WheelChain> {
+    return this.request(`/api/wheel-chains/${chainId}`);
+  }
+
+  async createWheelChain(underlying: string): Promise<{ id: string; chain: WheelChain; message: string }> {
+    return this.request('/api/wheel-chains', {
+      method: 'POST',
+      body: JSON.stringify({ underlying }),
+    });
+  }
+
+  async deleteWheelChain(chainId: string): Promise<{ message: string }> {
+    return this.request(`/api/wheel-chains/${chainId}`, { method: 'DELETE' });
+  }
+
+  async getWheelChainsByUnderlying(symbol: string): Promise<{ chains: WheelChain[] }> {
+    return this.request(`/api/wheel-chains/by-underlying/${symbol}`);
+  }
+
+  async getActiveWheelChain(symbol: string): Promise<{ chain: WheelChain | null }> {
+    return this.request(`/api/wheel-chains/active/${symbol}`);
+  }
+
+  async recordChainAssignment(
+    chainId: string,
+    strike: number,
+    shares: number = 100,
+    assignmentDate?: string
+  ): Promise<{ message: string; chain: WheelChain }> {
+    return this.request(`/api/wheel-chains/${chainId}/assignment`, {
+      method: 'POST',
+      body: JSON.stringify({ strike, shares, assignment_date: assignmentDate }),
+    });
+  }
+
+  async recordChainExit(
+    chainId: string,
+    exitPrice: number,
+    exitType: 'CALLED_AWAY' | 'SOLD',
+    exitDate?: string
+  ): Promise<{ message: string; chain: WheelChain }> {
+    return this.request(`/api/wheel-chains/${chainId}/exit`, {
+      method: 'POST',
+      body: JSON.stringify({ exit_price: exitPrice, exit_type: exitType, exit_date: exitDate }),
+    });
+  }
+
+  async linkPositionToChain(positionId: number, chainId: string): Promise<{ message: string }> {
+    return this.request(`/api/positions/${positionId}/link-chain/${chainId}`, {
+      method: 'POST',
+    });
+  }
+
+  async unlinkPositionFromChain(positionId: number): Promise<{ message: string }> {
+    return this.request(`/api/positions/${positionId}/unlink-chain`, {
+      method: 'POST',
+    });
+  }
+
+  // ==================== Auto Wheel Analysis ====================
+  // These endpoints automatically analyze historical positions - no manual linking required
+
+  async getAutoWheelAnalysis(): Promise<{ analysis: AutoWheelAnalysis[]; summary: AutoWheelSummary }> {
+    return this.request('/api/wheel/analysis');
+  }
+
+  async getAutoWheelAnalysisForSymbol(symbol: string): Promise<AutoWheelAnalysis> {
+    return this.request(`/api/wheel/analysis/${symbol}`);
+  }
+
+  async getAutoWheelSummary(): Promise<AutoWheelSummary> {
+    return this.request('/api/wheel/summary');
+  }
+
+  // ==================== Data Import ====================
+
+  async importIBKRTrades(file: File): Promise<{
+    success: boolean;
+    imported: number;
+    skipped: number;
+    errors: string[];
+    message: string;
+  }> {
+    const formData = new FormData();
+    formData.append('file', file);
+
+    const response = await fetch(`${this.baseUrl}/api/import/ibkr-trades`, {
+      method: 'POST',
+      body: formData,
+      // Note: Don't set Content-Type header - browser will set it with boundary for FormData
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+      throw new Error(error.detail || `API error: ${response.status}`);
+    }
+
+    return response.json();
   }
 }
 

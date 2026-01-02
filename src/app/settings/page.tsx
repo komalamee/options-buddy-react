@@ -34,6 +34,9 @@ import {
   Bell,
   Palette,
   CheckCircle2,
+  Upload,
+  FileSpreadsheet,
+  AlertCircle,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { usePortfolioStore } from '@/stores/portfolio-store';
@@ -118,6 +121,17 @@ export default function SettingsPage() {
   const [pnlAlerts, setPnlAlerts] = useState(true);
   const [marketReminder, setMarketReminder] = useState(false);
   const [notificationsLoaded, setNotificationsLoaded] = useState(false);
+
+  // CSV Import state
+  const [csvFile, setCsvFile] = useState<File | null>(null);
+  const [isImporting, setIsImporting] = useState(false);
+  const [importResult, setImportResult] = useState<{
+    success: boolean;
+    imported: number;
+    skipped: number;
+    errors: string[];
+    message: string;
+  } | null>(null);
 
   // Load AI settings on mount
   useEffect(() => {
@@ -273,6 +287,40 @@ export default function SettingsPage() {
     }
   };
 
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      setCsvFile(file);
+      setImportResult(null);
+    }
+  };
+
+  const handleImportCSV = async () => {
+    if (!csvFile) return;
+
+    setIsImporting(true);
+    setImportResult(null);
+
+    try {
+      const result = await api.importIBKRTrades(csvFile);
+      setImportResult(result);
+      if (result.success && result.imported > 0) {
+        setSyncMessage(`Successfully imported ${result.imported} historical trades!`);
+        setTimeout(() => setSyncMessage(''), 5000);
+      }
+    } catch (err) {
+      setImportResult({
+        success: false,
+        imported: 0,
+        skipped: 0,
+        errors: [err instanceof Error ? err.message : 'Unknown error'],
+        message: 'Import failed',
+      });
+    } finally {
+      setIsImporting(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
       {/* Page Header */}
@@ -313,6 +361,10 @@ export default function SettingsPage() {
           <TabsTrigger value="appearance" className="gap-2">
             <Palette className="h-4 w-4" />
             Appearance
+          </TabsTrigger>
+          <TabsTrigger value="data" className="gap-2">
+            <FileSpreadsheet className="h-4 w-4" />
+            Data Import
           </TabsTrigger>
         </TabsList>
 
@@ -693,6 +745,132 @@ export default function SettingsPage() {
                   </SelectContent>
                 </Select>
               </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* Data Import Tab */}
+        <TabsContent value="data" className="space-y-6">
+          <Card>
+            <CardHeader>
+              <CardTitle>Import IBKR Activity Statement</CardTitle>
+              <CardDescription>
+                Import historical options trades from an IBKR Activity Statement CSV file to track your performance
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              {/* Instructions */}
+              <div className="bg-muted/50 rounded-lg p-4 space-y-2 text-sm">
+                <p className="font-medium">How to export from IBKR:</p>
+                <ol className="list-decimal list-inside space-y-1 text-muted-foreground">
+                  <li>Log in to Client Portal or Account Management</li>
+                  <li>Go to Reports → Statements → Activity</li>
+                  <li>Select date range covering your trades</li>
+                  <li>Choose CSV format and download</li>
+                </ol>
+              </div>
+
+              {/* File Upload */}
+              <div className="space-y-4">
+                <div className="flex items-center gap-4">
+                  <div className="flex-1">
+                    <Input
+                      type="file"
+                      accept=".csv"
+                      onChange={handleFileSelect}
+                      className="cursor-pointer"
+                    />
+                  </div>
+                  <Button
+                    onClick={handleImportCSV}
+                    disabled={!csvFile || isImporting}
+                  >
+                    {isImporting ? (
+                      <>
+                        <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                        Importing...
+                      </>
+                    ) : (
+                      <>
+                        <Upload className="h-4 w-4 mr-2" />
+                        Import Trades
+                      </>
+                    )}
+                  </Button>
+                </div>
+                {csvFile && (
+                  <p className="text-sm text-muted-foreground">
+                    Selected: {csvFile.name} ({(csvFile.size / 1024).toFixed(1)} KB)
+                  </p>
+                )}
+              </div>
+
+              {/* Import Results */}
+              {importResult && (
+                <div className={cn(
+                  "rounded-lg p-4 space-y-2",
+                  importResult.success
+                    ? "bg-green-500/10 border border-green-500/50"
+                    : "bg-red-500/10 border border-red-500/50"
+                )}>
+                  <div className="flex items-center gap-2">
+                    {importResult.success ? (
+                      <CheckCircle2 className="h-5 w-5 text-green-500" />
+                    ) : (
+                      <AlertCircle className="h-5 w-5 text-red-500" />
+                    )}
+                    <span className={cn(
+                      "font-medium",
+                      importResult.success ? "text-green-500" : "text-red-500"
+                    )}>
+                      {importResult.message}
+                    </span>
+                  </div>
+
+                  {importResult.success && (
+                    <div className="grid grid-cols-2 gap-4 mt-3 text-sm">
+                      <div>
+                        <span className="text-muted-foreground">Trades Imported:</span>
+                        <span className="ml-2 font-medium text-green-500">{importResult.imported}</span>
+                      </div>
+                      <div>
+                        <span className="text-muted-foreground">Skipped (still open):</span>
+                        <span className="ml-2 font-medium">{importResult.skipped}</span>
+                      </div>
+                    </div>
+                  )}
+
+                  {importResult.errors.length > 0 && (
+                    <div className="mt-3">
+                      <p className="text-sm font-medium text-red-500 mb-1">Errors:</p>
+                      <ul className="text-sm text-muted-foreground space-y-1">
+                        {importResult.errors.slice(0, 5).map((err, i) => (
+                          <li key={i}>• {err}</li>
+                        ))}
+                        {importResult.errors.length > 5 && (
+                          <li>...and {importResult.errors.length - 5} more</li>
+                        )}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Supported Formats Info */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Supported Import Formats</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3 text-sm text-muted-foreground">
+              <div className="flex items-start gap-2">
+                <CheckCircle2 className="h-4 w-4 text-green-500 mt-0.5 shrink-0" />
+                <p><span className="font-medium text-foreground">IBKR Activity Statement (CSV)</span> — Contains trade details including opens, closes, and expirations</p>
+              </div>
+              <p className="pl-6">
+                The importer automatically matches opening trades with their closing trades or expirations to create complete position records.
+              </p>
             </CardContent>
           </Card>
         </TabsContent>
