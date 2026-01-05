@@ -36,6 +36,11 @@ class Settings(BaseSettings):
     api_host: str = "0.0.0.0"
     api_port: int = 8000
 
+    # Put-Call Parity Scanner parameters
+    risk_free_rate: float = 0.045  # 4.5% for 2025 (3-month T-bill rate)
+    parity_violation_threshold: float = 0.02  # 2% threshold for parity violations
+    iv_outlier_threshold: float = 2.0  # Z-score threshold for IV outliers
+
     # AI API Keys (optional)
     gemini_api_key: str = ""
     openai_api_key: str = ""
