@@ -1,5 +1,7 @@
+# Core dependencies
 fastapi==0.115.6
 uvicorn[standard]==0.34.0
+python-multipart==0.0.17
 ib_insync==0.9.86
 nest_asyncio==1.6.0
 python-dotenv==1.0.1
@@ -8,7 +10,6 @@ pydantic-settings==2.7.0
 pytz==2024.1
 scipy>=1.11.4
 numpy>=1.26.3
-python-multipart==0.0.20
 # Production dependencies
 asyncpg==0.30.0
 PyJWT==2.10.1
