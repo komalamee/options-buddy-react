@@ -27,7 +27,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Search, Plus, RefreshCw, TrendingUp, TrendingDown, DollarSign, Clock, RotateCcw } from 'lucide-react';
+import { Search, Plus, RefreshCw, TrendingUp, TrendingDown, DollarSign, Clock, RotateCcw, CheckCircle2, XCircle, AlertCircle } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { usePortfolioStore, AutoWheelAnalysis } from '@/stores/portfolio-store';
 import { AutoWheelCard, AutoWheelDetail } from '@/components/wheel';
@@ -75,6 +75,7 @@ export default function PositionsPage() {
   const [searchTerm, setSearchTerm] = useState('');
   const [filter, setFilter] = useState('all');
   const [selectedWheelAnalysis, setSelectedWheelAnalysis] = useState<AutoWheelAnalysis | null>(null);
+  const [syncStatus, setSyncStatus] = useState<{ type: 'success' | 'error' | null; message: string; timestamp?: Date }>({ type: null, message: '' });
   const premiumTrackerRef = useRef<HTMLDivElement>(null);
 
   const {
@@ -109,9 +110,26 @@ export default function PositionsPage() {
   };
 
   const handleSync = async () => {
+    // Refresh IBKR status first to ensure we have latest connection state
+    await fetchIBKRStatus();
+    setSyncStatus({ type: null, message: '' });
+
     const success = await syncWithIBKR();
+
     if (success) {
-      // Data is automatically refreshed in the store
+      setSyncStatus({
+        type: 'success',
+        message: `Synced ${positions.length} positions and ${stockHoldings.length} holdings`,
+        timestamp: new Date()
+      });
+      // Auto-hide after 5 seconds
+      setTimeout(() => setSyncStatus(prev => ({ ...prev, type: null })), 5000);
+    } else {
+      setSyncStatus({
+        type: 'error',
+        message: error || 'Sync failed - check IBKR connection',
+        timestamp: new Date()
+      });
     }
   };
 
@@ -170,13 +188,36 @@ export default function PositionsPage() {
 
       {/* Connection Status */}
       {!ibkrStatus.connected && (
-        <div className="bg-yellow-500/10 border border-yellow-500/50 text-yellow-600 px-4 py-3 rounded-lg">
+        <div className="bg-yellow-500/10 border border-yellow-500/50 text-yellow-600 px-4 py-3 rounded-lg flex items-center gap-2">
+          <AlertCircle className="h-4 w-4" />
           IBKR not connected. Go to Settings to connect for live sync.
         </div>
       )}
 
+      {/* Sync Status Feedback */}
+      {syncStatus.type === 'success' && (
+        <div className="bg-green-500/10 border border-green-500/50 text-green-600 px-4 py-3 rounded-lg flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="h-4 w-4" />
+            {syncStatus.message}
+          </div>
+          {syncStatus.timestamp && (
+            <span className="text-xs text-green-500/70">
+              {syncStatus.timestamp.toLocaleTimeString()}
+            </span>
+          )}
+        </div>
+      )}
+
+      {syncStatus.type === 'error' && (
+        <div className="bg-red-500/10 border border-red-500/50 text-red-500 px-4 py-3 rounded-lg flex items-center gap-2">
+          <XCircle className="h-4 w-4" />
+          {syncStatus.message}
+        </div>
+      )}
+
       {/* Error Message */}
-      {error && (
+      {error && !syncStatus.type && (
         <div className="bg-red-500/10 border border-red-500/50 text-red-500 px-4 py-3 rounded-lg">
           {error}
         </div>
