@@ -534,7 +534,7 @@ export default function SettingsPage() {
             <CardContent className="space-y-3 text-sm text-muted-foreground">
               <p>1. Make sure TWS or IB Gateway is running</p>
               <p>2. Enable API connections in TWS: File - Global Configuration - API - Settings</p>
-              <p>3. Check "Enable ActiveX and Socket Clients"</p>
+              <p>3. Check &quot;Enable ActiveX and Socket Clients&quot;</p>
               <p>4. Use port 4001 for Gateway or 7497 for TWS (paper: 4002/7496)</p>
               <p>5. Add 127.0.0.1 to trusted IP addresses if needed</p>
             </CardContent>

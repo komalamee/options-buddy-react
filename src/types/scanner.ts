@@ -80,3 +80,58 @@ export const DEFAULT_WEEKLY_HIGH_IV_PRESET: FilterPreset = {
 };
 
 export const PRESETS_STORAGE_KEY = 'options-buddy-scanner-presets';
+
+// ==================== PUT-CALL PARITY SCANNER ====================
+
+export interface MispricedOption {
+  symbol: string;
+  strike: number;
+  expiry: string;
+  dte: number;
+
+  // Call data
+  call_bid: number;
+  call_ask: number;
+  call_mid: number;
+  call_iv: number | null;
+  call_volume: number;
+
+  // Put data
+  put_bid: number;
+  put_ask: number;
+  put_mid: number;
+  put_iv: number | null;
+  put_volume: number;
+
+  // Put-Call Parity Analysis
+  parity_value: number;
+  market_spread: number;
+  violation_dollars: number;
+  violation_pct: number;
+  is_violation: boolean;
+  arbitrage_type: 'call_overpriced' | 'put_overpriced' | 'no_violation';
+
+  // Synthetic prices
+  synthetic_call: number;
+  synthetic_put: number;
+
+  // Statistical outlier detection
+  iv_z_score: number;
+  is_iv_outlier: boolean;
+
+  // Greeks
+  avg_delta: number | null;
+
+  // Scoring
+  opportunity_score: number;
+}
+
+export interface ParityScanResponse {
+  symbol: string;
+  stock_price: number;
+  scan_timestamp: string;
+  risk_free_rate: number;
+  avg_iv: number;
+  iv_std_dev: number;
+  opportunities: MispricedOption[];
+}

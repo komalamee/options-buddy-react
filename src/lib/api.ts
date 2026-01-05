@@ -310,7 +310,7 @@ class ApiClient {
 
   // ==================== IBKR Sync ====================
 
-  async getIBKRPositions(account?: string): Promise<{ positions: any[] }> {
+  async getIBKRPositions(account?: string): Promise<{ positions: unknown[] }> {
     const params = account ? `?account=${account}` : '';
     return this.request(`/api/ibkr/positions${params}`);
   }
@@ -465,6 +465,20 @@ class ApiClient {
     max_delta?: number;
   }): Promise<{ results: ScanResult[] }> {
     return this.request('/api/scanner/scan', {
+      method: 'POST',
+      body: JSON.stringify(request),
+    });
+  }
+
+  async runParityScan(request: {
+    symbol: string;
+    min_dte?: number;
+    max_dte?: number;
+    risk_free_rate?: number;
+    parity_threshold?: number;
+    max_results?: number;
+  }): Promise<import('@/types/scanner').ParityScanResponse> {
+    return this.request('/api/scanner/parity-scan', {
       method: 'POST',
       body: JSON.stringify(request),
     });

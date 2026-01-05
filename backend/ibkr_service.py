@@ -549,8 +549,10 @@ class IBKRService:
                 ticker = self._ib.reqMktData(contract, '', False, False)
                 tickers.append((ticker, contract, strike, right))
 
-            # Wait for data to arrive (single wait for all)
-            self._ib.sleep(1.5)
+            # Wait for data to arrive (dynamic wait based on number of contracts)
+            num_contracts = len(contracts)
+            wait_time = min(num_contracts * 0.3, 8.0)  # 0.3s per contract, max 8s
+            self._ib.sleep(wait_time)
 
             # Collect results
             for ticker, contract, strike, right in tickers:

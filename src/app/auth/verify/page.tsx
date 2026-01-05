@@ -17,13 +17,13 @@ function VerifyContent() {
   useEffect(() => {
     const token = searchParams.get('token');
 
-    if (!token) {
-      setStatus('error');
-      setErrorMessage('No verification token provided.');
-      return;
-    }
-
     const verify = async () => {
+      if (!token) {
+        setStatus('error');
+        setErrorMessage('No verification token provided.');
+        return;
+      }
+
       const success = await verifyToken(token);
 
       if (success) {

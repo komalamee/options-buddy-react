@@ -14,6 +14,12 @@ import io
 import re
 
 from config import settings
+from put_call_parity import (
+    calculate_put_call_parity_violation,
+    calculate_synthetic_prices,
+    detect_statistical_outliers,
+    calculate_opportunity_score as calc_parity_opportunity_score
+)
 from database import (
     get_open_positions,
     get_closed_positions,
@@ -146,6 +152,68 @@ class ScanRequest(BaseModel):
     max_dte: int = 45
     min_delta: float = 0.15
     max_delta: float = 0.35
+
+
+class ParityScanRequest(BaseModel):
+    symbol: str
+    min_dte: int = 7
+    max_dte: int = 45
+    risk_free_rate: float = 0.045
+    parity_threshold: float = 0.02
+    max_results: int = 10
+
+
+class MispricedOption(BaseModel):
+    symbol: str
+    strike: float
+    expiry: str
+    dte: int
+
+    # Call data
+    call_bid: float
+    call_ask: float
+    call_mid: float
+    call_iv: Optional[float]
+    call_volume: int
+
+    # Put data
+    put_bid: float
+    put_ask: float
+    put_mid: float
+    put_iv: Optional[float]
+    put_volume: int
+
+    # Put-Call Parity Analysis
+    parity_value: float
+    market_spread: float
+    violation_dollars: float
+    violation_pct: float
+    is_violation: bool
+    arbitrage_type: str
+
+    # Synthetic prices
+    synthetic_call: float
+    synthetic_put: float
+
+    # Statistical outlier detection
+    iv_z_score: float
+    is_iv_outlier: bool
+
+    # Greeks
+    avg_delta: Optional[float]
+
+    # Scoring
+    opportunity_score: int
+
+
+class ParityScanResponse(BaseModel):
+    symbol: str
+    stock_price: float
+    scan_timestamp: str
+    risk_free_rate: float
+    avg_iv: float
+    iv_std_dev: float
+    opportunities: List[MispricedOption]
 
 
 class AISettingsUpdate(BaseModel):
@@ -871,6 +939,242 @@ def calculate_opportunity_score(option_data: dict, stock_price: float, dte: int)
             score += 5
 
     return min(100, max(0, score))
+
+
+@app.post("/api/scanner/parity-scan")
+def run_parity_scan(request: ParityScanRequest):
+    """
+    Scan for options mispricing using put-call parity analysis.
+
+    Detects:
+    1. Put-call parity violations (arbitrage opportunities)
+    2. Statistical outliers in implied volatility
+
+    Returns top mispriced options sorted by opportunity score.
+    """
+    ibkr = get_ibkr_service()
+    if not ibkr.is_connected:
+        raise HTTPException(status_code=400, detail="Not connected to IBKR")
+
+    try:
+        # Get current stock price
+        stock_price = ibkr.get_stock_price(request.symbol)
+        if not stock_price:
+            raise HTTPException(status_code=404, detail=f"Could not get stock price for {request.symbol}")
+
+        # Get available expirations
+        expirations = ibkr.get_option_chain_expirations(request.symbol)
+
+        # Filter to desired DTE range
+        today = date.today()
+        valid_expirations = []
+        for exp in expirations:
+            try:
+                exp_date = datetime.strptime(exp, '%Y%m%d').date()
+                dte = (exp_date - today).days
+                if request.min_dte <= dte <= request.max_dte:
+                    valid_expirations.append((exp, dte))
+            except:
+                continue
+
+        if not valid_expirations:
+            return ParityScanResponse(
+                symbol=request.symbol.upper(),
+                stock_price=stock_price,
+                scan_timestamp=datetime.now().isoformat(),
+                risk_free_rate=request.risk_free_rate,
+                avg_iv=0.0,
+                iv_std_dev=0.0,
+                opportunities=[]
+            )
+
+        # Limit to first 3 expirations
+        valid_expirations = valid_expirations[:3]
+
+        # Collect all call-put pairs
+        all_pairs = []
+
+        for exp, dte in valid_expirations:
+            # Get strikes within ±20% of current price
+            strikes = ibkr.get_option_chain_strikes(request.symbol, exp)
+            nearby_strikes = [
+                s for s in strikes
+                if stock_price * 0.80 <= s <= stock_price * 1.20
+            ]
+
+            # Limit to 15 strikes per expiration
+            nearby_strikes = nearby_strikes[:15]
+
+            if not nearby_strikes:
+                continue
+
+            # Bulk fetch BOTH calls AND puts for all strikes
+            chain_data = ibkr.get_option_chain_bulk(request.symbol, exp, nearby_strikes)
+
+            # Group by strike to create call-put pairs
+            strike_map = {}
+            for opt in chain_data:
+                strike = opt['strike']
+                right = opt['right']
+
+                if strike not in strike_map:
+                    strike_map[strike] = {'strike': strike, 'expiry': exp, 'dte': dte}
+
+                # Calculate mid price
+                bid = opt.get('bid')
+                ask = opt.get('ask')
+                mid = (bid + ask) / 2 if bid is not None and ask is not None else None
+
+                if right == 'C':
+                    strike_map[strike]['call'] = opt
+                    strike_map[strike]['call_mid'] = mid
+                elif right == 'P':
+                    strike_map[strike]['put'] = opt
+                    strike_map[strike]['put_mid'] = mid
+
+            # Create pairs where we have BOTH call and put
+            for strike, data in strike_map.items():
+                if 'call' in data and 'put' in data and data.get('call_mid') and data.get('put_mid'):
+                    all_pairs.append(data)
+
+        if not all_pairs:
+            return ParityScanResponse(
+                symbol=request.symbol.upper(),
+                stock_price=stock_price,
+                scan_timestamp=datetime.now().isoformat(),
+                risk_free_rate=request.risk_free_rate,
+                avg_iv=0.0,
+                iv_std_dev=0.0,
+                opportunities=[]
+            )
+
+        # Calculate put-call parity violations for each pair
+        opportunities = []
+
+        for pair in all_pairs:
+            call_data = pair['call']
+            put_data = pair['put']
+            strike = pair['strike']
+            dte = pair['dte']
+            time_to_expiry = dte / 365.0
+
+            # Get prices
+            call_mid = pair['call_mid']
+            put_mid = pair['put_mid']
+
+            # Calculate put-call parity violation
+            parity_result = calculate_put_call_parity_violation(
+                call_price=call_mid,
+                put_price=put_mid,
+                stock_price=stock_price,
+                strike=strike,
+                time_to_expiry=time_to_expiry,
+                risk_free_rate=request.risk_free_rate,
+                threshold=request.parity_threshold
+            )
+
+            # Calculate synthetic prices
+            synthetics = calculate_synthetic_prices(
+                stock_price=stock_price,
+                strike=strike,
+                time_to_expiry=time_to_expiry,
+                risk_free_rate=request.risk_free_rate,
+                call_price=call_mid,
+                put_price=put_mid
+            )
+
+            # Prepare opportunity data
+            opp = {
+                'symbol': request.symbol.upper(),
+                'strike': strike,
+                'expiry': pair['expiry'],
+                'dte': dte,
+                'call_bid': call_data.get('bid', 0.0),
+                'call_ask': call_data.get('ask', 0.0),
+                'call_mid': call_mid,
+                'call_iv': call_data.get('iv'),
+                'call_volume': call_data.get('volume', 0),
+                'put_bid': put_data.get('bid', 0.0),
+                'put_ask': put_data.get('ask', 0.0),
+                'put_mid': put_mid,
+                'put_iv': put_data.get('iv'),
+                'put_volume': put_data.get('volume', 0),
+                'parity_value': parity_result['parity_value'],
+                'market_spread': parity_result['market_spread'],
+                'violation_dollars': parity_result['violation_dollars'],
+                'violation_pct': parity_result['violation_pct'],
+                'is_violation': parity_result['is_violation'],
+                'arbitrage_type': parity_result['arbitrage_type'],
+                'synthetic_call': synthetics['synthetic_call'],
+                'synthetic_put': synthetics['synthetic_put'],
+                'avg_delta': None,
+                'iv': (call_data.get('iv', 0) + put_data.get('iv', 0)) / 2 if call_data.get('iv') and put_data.get('iv') else None
+            }
+
+            # Calculate average delta if available
+            call_delta = call_data.get('delta')
+            put_delta = put_data.get('delta')
+            if call_delta is not None and put_delta is not None:
+                opp['avg_delta'] = (abs(call_delta) + abs(put_delta)) / 2
+
+            opportunities.append(opp)
+
+        # Detect IV outliers across all options
+        opportunities = detect_statistical_outliers(opportunities, metric='iv', threshold=2.0)
+
+        # Calculate IV statistics
+        ivs = [opp['iv'] for opp in opportunities if opp.get('iv') is not None]
+        avg_iv = sum(ivs) / len(ivs) if ivs else 0.0
+
+        import math
+        if len(ivs) > 1:
+            variance = sum((x - avg_iv) ** 2 for x in ivs) / (len(ivs) - 1)
+            iv_std_dev = math.sqrt(variance)
+        else:
+            iv_std_dev = 0.0
+
+        # Calculate opportunity scores
+        for opp in opportunities:
+            moneyness = stock_price / opp['strike'] if opp['strike'] > 0 else 1.0
+            total_volume = opp['call_volume'] + opp['put_volume']
+
+            opp['opportunity_score'] = calc_parity_opportunity_score(
+                violation_pct=opp['violation_pct'],
+                is_violation=opp['is_violation'],
+                iv_z_score=opp.get('iv_z_score', 0.0),
+                is_iv_outlier=opp.get('is_iv_outlier', False),
+                total_volume=total_volume,
+                moneyness=moneyness
+            )
+
+        # Filter to violations OR outliers
+        filtered_opportunities = [
+            opp for opp in opportunities
+            if opp['is_violation'] or opp.get('is_iv_outlier', False)
+        ]
+
+        # Sort by opportunity score descending
+        filtered_opportunities.sort(key=lambda x: x['opportunity_score'], reverse=True)
+
+        # Return top N results
+        top_opportunities = filtered_opportunities[:request.max_results]
+
+        # Convert to Pydantic models
+        mispriced_options = [MispricedOption(**opp) for opp in top_opportunities]
+
+        return ParityScanResponse(
+            symbol=request.symbol.upper(),
+            stock_price=stock_price,
+            scan_timestamp=datetime.now().isoformat(),
+            risk_free_rate=request.risk_free_rate,
+            avg_iv=avg_iv,
+            iv_std_dev=iv_std_dev,
+            opportunities=mispriced_options
+        )
+
+    except Exception as e:
+        logger.error(f"Error in parity scan for {request.symbol}: {e}")
+        raise HTTPException(status_code=500, detail=f"Scanner error: {str(e)}")
 
 
 # ==================== PERFORMANCE ====================
